@@ -87,6 +87,14 @@ import {
   type Person,
 } from '@/lib/project';
 import ScriptEditor from './script-editor';
+import { deleteElement, type DeleteKind } from '@/lib/deletions';
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+} from '@/components/ui/alert-dialog';
 import { useWorkspace } from './use-workspace';
 import { Switch } from '@/components/ui/switch';
 import { useBackups } from './use-backups';
@@ -238,18 +246,28 @@ export default function Home() {
     [panelEdit, setPanelEdit] = useState<Panel | null>(null),
     [exporting, setExporting] = useState(false),
     [actName, setActName] = useState(''),
-    [addAct, setAddAct] = useState(false);
+    [addAct, setAddAct] = useState(false),
+    [deletion, setDeletion] = useState<{
+      kind: DeleteKind;
+      id: string;
+      name: string;
+      rootId: string;
+      workspaceId: string;
+    } | null>(null);
   const rootProject = projects.find((p) => p.id === projectId) ?? projects[0];
   const isSeries = rootProject?.kind === 'series';
   const activeEpisode =
     rootProject?.episodes?.find((e) => e.id === episodeId) ??
     rootProject?.episodes?.[0];
   const project =
-    isSeries && view !== 'Series overview' ? activeEpisode! : rootProject;
+    isSeries && view !== 'Series overview'
+      ? (activeEpisode ?? rootProject)
+      : rootProject;
   const scene =
     project?.scenes.find((s) => s.id === sceneId) ?? project?.scenes[0];
   const { lastBackups, backupErrors } = useBackups(projects, loaded, scope);
   useEffect(() => {
+    setDeletion(null);
     setProjectId('');
     setEpisodeId('');
     setSceneId('');
@@ -412,6 +430,41 @@ export default function Home() {
     } catch {
       setNotice('Could not read the local backup. Please try again.');
     }
+  }
+  function askDelete(kind: DeleteKind, id: string, name: string) {
+    setDeletion({
+      kind,
+      id,
+      name,
+      rootId: rootProject.id,
+      workspaceId: kind === 'episode' ? rootProject.id : project.id,
+    });
+  }
+  function confirmDelete() {
+    if (!deletion) return;
+    setProjects((all) =>
+      all.map((p) =>
+        p.id === deletion.rootId
+          ? updateWorkspace(p, deletion.workspaceId, (w) =>
+              deleteElement(w, deletion.kind, deletion.id),
+            )
+          : p,
+      ),
+    );
+    setDeletion(null);
+    setInspect(false);
+    setEntityId('');
+    setPanelEdit(null);
+    setSceneId('');
+    if (deletion.kind === 'episode') {
+      setEpisodeId('');
+      setView('Series overview');
+    }
+    setNotice(
+      deletion.kind === 'story'
+        ? 'Story content cleared.'
+        : 'Deleted. Linked workspaces updated.',
+    );
   }
   function addPanel() {
     if (!scene) return;
@@ -648,7 +701,7 @@ export default function Home() {
                 </SidebarMenuButton>
               </SidebarMenuItem>
             )}
-            {nav.map(([n, I]) => (
+            {(isSeries && !activeEpisode ? [] : nav).map(([n, I]) => (
               <SidebarMenuItem key={n}>
                 <SidebarMenuButton
                   isActive={!dashboard && view === n}
@@ -946,7 +999,9 @@ export default function Home() {
                     </div>
                     <p>
                       {p.kind === 'series'
-                        ? 'Web series · ' + (p.episodes?.length ?? 0) + ' episodes'
+                        ? 'Web series · ' +
+                          (p.episodes?.length ?? 0) +
+                          ' episodes'
                         : p.format + ' · ' + p.scenes.length + ' scenes'}{' '}
                       · {p.draft}
                     </p>
@@ -1007,6 +1062,19 @@ export default function Home() {
                             <Plus size={16} />
                           </button>
                         </div>
+                        <button
+                          className="delete-column"
+                          disabled={project.acts.length <= 1}
+                          title={
+                            project.acts.length <= 1
+                              ? 'Keep at least one column'
+                              : 'Delete column and its scenes'
+                          }
+                          onClick={() => askDelete('act', act, act)}
+                        >
+                          <Trash2 size={13} />
+                          Delete column
+                        </button>
                         <p className="act-sub">
                           {[
                             'The things we don’t say',
@@ -1098,6 +1166,16 @@ export default function Home() {
                                 </div>
                                 <div className="card-tools">
                                   <GripVertical size={13} />
+                                  <button
+                                    className="delete-element"
+                                    aria-label={'Delete scene ' + number}
+                                    title="Delete scene"
+                                    onClick={() =>
+                                      askDelete('scene', s.id, s.heading)
+                                    }
+                                  >
+                                    <Trash2 size={15} />
+                                  </button>
                                   <button
                                     aria-label={
                                       'Set emotion colour for scene ' + number
@@ -1215,29 +1293,45 @@ export default function Home() {
                                 (a.episodeNumber ?? 0) - (b.episodeNumber ?? 0),
                             )
                             .map((e) => (
-                              <button
-                                key={e.id}
-                                className="episode-row"
-                                onClick={() => selectEpisode(e.id)}
-                              >
-                                <span className="episode-code">
-                                  {episodeLabel(e)}
-                                </span>
-                                <span>
-                                  <b>{e.title}</b>
-                                  <small>
-                                    {e.scenes.length} scenes ·{' '}
-                                    {time(
-                                      e.scenes.reduce(
-                                        (n, s) => n + s.duration,
-                                        0,
-                                      ),
-                                    )}{' '}
-                                    · {e.draft}
-                                  </small>
-                                </span>
-                                <ArrowUpRight size={18} />
-                              </button>
+                              <div key={e.id} className="episode-with-delete">
+                                <button
+                                  className="episode-row"
+                                  onClick={() => selectEpisode(e.id)}
+                                >
+                                  <span className="episode-code">
+                                    {episodeLabel(e)}
+                                  </span>
+                                  <span>
+                                    <b>{e.title}</b>
+                                    <small>
+                                      {e.scenes.length} scenes ·{' '}
+                                      {time(
+                                        e.scenes.reduce(
+                                          (n, s) => n + s.duration,
+                                          0,
+                                        ),
+                                      )}{' '}
+                                      · {e.draft}
+                                    </small>
+                                  </span>
+                                  <ArrowUpRight size={18} />
+                                </button>
+                                <button
+                                  className="delete-element episode-delete"
+                                  aria-label={
+                                    'Delete ' + episodeLabel(e) + ' ' + e.title
+                                  }
+                                  onClick={() =>
+                                    askDelete(
+                                      'episode',
+                                      e.id,
+                                      episodeLabel(e) + ' · ' + e.title,
+                                    )
+                                  }
+                                >
+                                  <Trash2 size={17} />
+                                </button>
+                              </div>
                             ))}
                         </div>
                       ))}
@@ -1415,7 +1509,16 @@ export default function Home() {
               {view === 'Story' && (
                 <div className="story-writing">
                   <section className="form-panel">
-                    <div className="section-kicker">STORY FOUNDATION</div>
+                    <div className="section-title-row">
+                      <div className="section-kicker">STORY FOUNDATION</div>
+                      <button
+                        className="delete-element"
+                        onClick={() => askDelete('story', '', project.title)}
+                      >
+                        <Trash2 size={14} />
+                        Clear story content
+                      </button>
+                    </div>
                     <Field
                       label="Title"
                       value={project.title}
@@ -2028,6 +2131,14 @@ export default function Home() {
                   })
                 }
               />
+              <Button
+                variant="outline"
+                className="delete-element"
+                onClick={() => askDelete('scene', scene.id, scene.heading)}
+              >
+                <Trash2 size={15} />
+                Delete scene
+              </Button>
               <Field
                 label="Summary"
                 value={scene.summary}
@@ -2290,6 +2401,20 @@ export default function Home() {
                   multiline
                 />
               ))}
+            <Button
+              variant="outline"
+              className="delete-element"
+              onClick={() =>
+                askDelete(
+                  person ? 'character' : 'location',
+                  entityId,
+                  person?.name ?? place?.name ?? 'entry',
+                )
+              }
+            >
+              <Trash2 size={15} />
+              Delete {person ? 'character' : 'location'}
+            </Button>
             <h3>Scene appearances</h3>
             {project.scenes
               .filter((s) =>
@@ -2431,10 +2556,71 @@ export default function Home() {
               >
                 Save panel <Check size={16} />
               </button>
+              {project.panels.some((p) => p.id === panelEdit.id) && (
+                <Button
+                  variant="outline"
+                  className="delete-element"
+                  onClick={() =>
+                    askDelete(
+                      'panel',
+                      panelEdit.id,
+                      'this storyboard panel / shot',
+                    )
+                  }
+                >
+                  <Trash2 size={15} />
+                  Delete panel / shot
+                </Button>
+              )}
+              {panelEdit.image && (
+                <Button
+                  variant="outline"
+                  onClick={() =>
+                    setPanelEdit({ ...panelEdit, image: undefined })
+                  }
+                >
+                  Remove image (save to apply)
+                </Button>
+              )}
             </>
           )}
         </DialogContent>
       </Dialog>
+      <AlertDialog
+        open={!!deletion}
+        onOpenChange={(open) => {
+          if (!open) setDeletion(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogTitle>
+            {deletion?.kind === 'story'
+              ? 'Clear story content?'
+              : 'Delete ' + (deletion?.name ?? 'item') + '?'}
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {deletion?.kind === 'episode'
+              ? 'This removes the episode and all its scenes, script, storyboard panels, shots, characters, and locations. Other episodes are kept.'
+              : deletion?.kind === 'scene' || deletion?.kind === 'act'
+                ? 'This removes the selected scene(s), their screenplay text, and all linked storyboard panels and shots.'
+                : deletion?.kind === 'character' ||
+                    deletion?.kind === 'location'
+                  ? 'This removes the bible entry and its scene links. Screenplay text is kept. The entry will not be automatically recreated; you can add it again manually.'
+                  : deletion?.kind === 'story'
+                    ? 'This clears the logline, premise, theme, synopsis, treatment, notes, and references. The title, format, runtime, scenes, and other workspaces are kept.'
+                    : 'This removes the panel from both the storyboard and shot list, including its image.'}{' '}
+            Changes save locally and sync to Firebase when signed in.
+          </AlertDialogDescription>
+          <AlertDialogFooter>
+            <Button variant="outline" onClick={() => setDeletion(null)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={confirmDelete}>
+              {deletion?.kind === 'story' ? 'Clear content' : 'Delete'}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       {notice && (
         <div role="status" className="notice">
           {notice}

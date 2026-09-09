@@ -59,6 +59,8 @@ export type Scene = {
   blocks: Block[];
 };
 export type Project = {
+  excludedCharacterNames?: string[];
+  excludedLocationNames?: string[];
   backupSettings?: { enabled: boolean; intervalMinutes: number };
   kind?: 'single' | 'series';
   episodes?: Project[];
@@ -144,7 +146,7 @@ export function reconcile(project: Project): Project {
       scene.heading;
     const name = locationName(heading);
     let location = locations.find((l) => l.name.toUpperCase() === name);
-    if (!location && name) {
+    if (!location && name && !project.excludedLocationNames?.includes(name)) {
       location = {
         generated: true,
         id: uid(),
@@ -164,6 +166,8 @@ export function reconcile(project: Project): Project {
               .trim()
               .toUpperCase();
             let person = characters.find((p) => p.name.toUpperCase() === name);
+            if (!person && project.excludedCharacterNames?.includes(name))
+              return undefined;
             if (!person) {
               person = {
                 generated: true,
@@ -180,7 +184,8 @@ export function reconcile(project: Project): Project {
               characters.push(person);
             }
             return person.id;
-          }),
+          })
+          .filter((id): id is string => id !== undefined),
       ),
     );
     return { ...scene, heading, locationId: location?.id ?? '', characterIds };
@@ -434,7 +439,8 @@ export function createSeries(title: string, count = 1): Project {
   };
 }
 export function normalizeProject(project: Project): Project {
-  if (project.kind === 'series' && project.episodes?.length) return project;
+  if (project.kind === 'series' && Array.isArray(project.episodes))
+    return project;
   if (
     project.kind === 'series' ||
     project.format === 'Series' ||

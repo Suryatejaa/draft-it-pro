@@ -178,7 +178,6 @@ export function validateCloudProject(
   if (p.kind === 'series') {
     if (
       !Array.isArray(p.episodes) ||
-      !p.episodes.length ||
       p.episodes.some((e) => e.kind === 'series')
     )
       throw Error('The cloud series has invalid episodes.');

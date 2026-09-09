@@ -1,7 +1,6 @@
 @import 'tailwindcss';
 @import './tw-animate.css';
 
-
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
@@ -765,7 +764,9 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: color 0.15s, background-color 0.15s;
+  transition:
+    color 0.15s,
+    background-color 0.15s;
 }
 .delete-project-btn:hover {
   color: #ef4444;
@@ -2168,4 +2169,54 @@ button:disabled {
     flex-direction: column;
     gap: 7px;
   }
+}
+.delete-element {
+  color: #b34d42 !important;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.delete-element:hover {
+  background: #fff0ed !important;
+}
+.delete-column {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: #9098a1;
+  margin-top: 12px;
+}
+.delete-column:hover:not(:disabled) {
+  color: #b34d42;
+}
+.episode-with-delete {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.episode-with-delete .episode-row {
+  margin-bottom: 0;
+  flex: 1;
+  min-width: 0;
+}
+.episode-delete {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: white;
+}
+.section-title-row {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 15px;
+  margin-bottom: 14px;
+}
+.section-title-row button {
+  font-size: 13px;
+}
+.section-title-row .section-kicker {
+  margin-bottom: 0;
 }

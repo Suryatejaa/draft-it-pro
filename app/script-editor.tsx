@@ -17,7 +17,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
 } from '@/components/ui/dropdown-menu';
-import { ChevronDown, Undo2, Redo2 } from 'lucide-react';
+import { ChevronDown, Undo2, Redo2, Trash2 } from 'lucide-react';
 const nextType: Record<string, ElementType> = {
   scene_heading: 'action',
   action: 'action',
@@ -193,6 +193,29 @@ export default function ScriptEditor({
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Delete selected paragraph"
+          title="Delete paragraph (Undo to restore)"
+          disabled={!editor || active === 'scene_heading'}
+          onClick={() => {
+            if (!editor) return;
+            const { $from } = editor.state.selection;
+            if (
+              $from.parent.type.name !== 'paragraph' ||
+              $from.parent.attrs.kind === 'scene_heading'
+            )
+              return;
+            editor
+              .chain()
+              .focus()
+              .deleteRange({ from: $from.before(), to: $from.after() })
+              .run();
+          }}
+        >
+          <Trash2 size={15} />
+        </Button>
         <span>Courier · 12 pt</span>
         <Button
           aria-label="Undo"

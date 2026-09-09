@@ -423,7 +423,7 @@ function packageProject(value: unknown, depth = 0): Project {
     let p = createSeries(name(o.title, 'project.title'));
     if (o.story) p = { ...p, ...storyPatch(o.story) };
     const eps = arr(o.episodes, 'project.episodes', 500);
-    if (!eps.length) throw Error('A series needs an episode.');
+
     const codes = new Set<string>();
     p.episodes = eps.map((v) => {
       const e = obj(v, 'episode');
@@ -451,6 +451,16 @@ function packageProject(value: unknown, depth = 0): Project {
   if (p.kind === 'series')
     throw Error('Use kind series and episodes for series.');
   if (o.story) p = { ...p, ...storyPatch(o.story) };
+  if (o.excludedCharacterNames)
+    p.excludedCharacterNames = arr(
+      o.excludedCharacterNames,
+      'excludedCharacterNames',
+    ).map((v) => name(v, 'character name'));
+  if (o.excludedLocationNames)
+    p.excludedLocationNames = arr(
+      o.excludedLocationNames,
+      'excludedLocationNames',
+    ).map((v) => name(v, 'location name'));
   if (o.characters) p = entities(p, o.characters, 'characters');
   if (o.locations) p = entities(p, o.locations, 'locations');
   const source = arr(o.scenes ?? [], 'scenes');
@@ -498,6 +508,8 @@ function backupPackage(value: unknown, depth = 0): Obj {
     kind: 'single',
     format: o.format,
     acts: o.acts,
+    excludedCharacterNames: o.excludedCharacterNames,
+    excludedLocationNames: o.excludedLocationNames,
     seasonNumber: o.seasonNumber,
     episodeNumber: o.episodeNumber,
     story: o,
