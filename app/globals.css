@@ -741,12 +741,35 @@ button:disabled {
 .project-info {
   padding: 22px;
 }
-.project-info h3 {
+.project-info-header {
   display: flex;
+  align-items: center;
   justify-content: space-between;
+  margin-bottom: 10px;
+}
+.project-info-header h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 15px;
   font-weight: 600;
-  margin-bottom: 10px;
+  margin-bottom: 0;
+}
+.delete-project-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  color: var(--muted-foreground, #71717a);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background-color 0.15s;
+}
+.delete-project-btn:hover {
+  color: #ef4444;
+  background-color: rgba(239, 68, 68, 0.1);
 }
 .project-info p {
   font-size: 12px;

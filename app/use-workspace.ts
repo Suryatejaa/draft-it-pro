@@ -18,6 +18,7 @@ import {
 import {
   cloudManifest,
   conflictCopy,
+  deleteCloudProject,
   digest,
   downloadCloudProject,
   mergeGuest,
@@ -33,6 +34,32 @@ import {
   saveWorkspace,
 } from '@/lib/workspace-store';
 import { normalizeProject, seeds, type Project } from '@/lib/project';
+
+function deduplicateProjects(list: Project[]): Project[] {
+  const seenIds = new Set<string>();
+  const seenTitles = new Set<string>();
+  const result: Project[] = [];
+  for (const p of list) {
+    if (!p || seenIds.has(p.id)) continue;
+    // Keep only the first copy of UNSENT demo project
+    if (p.title === 'UNSENT') {
+      if (seenTitles.has('UNSENT')) continue;
+      seenTitles.add('UNSENT');
+    }
+    // Filter out legacy unedited seed projects DEPRIVED and OH ISHA
+    if (
+      (p.title === 'DEPRIVED' && p.scenes.length === 0) ||
+      (p.title === 'OH ISHA' &&
+        (!p.episodes || p.episodes.every((e) => e.scenes.length === 0)))
+    ) {
+      continue;
+    }
+    seenIds.add(p.id);
+    result.push(p);
+  }
+  return result;
+}
+
 export function useWorkspace() {
   const [projects, rawSetProjects] = useState<Project[]>([]),
     [loaded, setLoaded] = useState(false),
@@ -111,10 +138,17 @@ export function useWorkspace() {
         } else if (!data?.projects.length)
           data = { projects: seeds(), bases: {} };
         if (!alive || generation.current !== token) return;
-        const normalized = (data?.projects ?? []).map(normalizeProject);
+        const normalized = deduplicateProjects(
+          (data?.projects ?? []).map(normalizeProject),
+        );
+        const validIds = new Set(normalized.map((p) => p.id));
+        const filteredBases: SyncBases = {};
+        for (const [k, v] of Object.entries(data?.bases ?? {})) {
+          if (validIds.has(k)) filteredBases[k] = v;
+        }
         activeScope.current = nextScope;
         setScope(nextScope);
-        bases.current = data?.bases ?? {};
+        bases.current = filteredBases;
         local.current = normalized;
         rawSetProjects(normalized);
         ready.current = true;
@@ -233,6 +267,14 @@ export function useWorkspace() {
           if (!valid()) return;
           const manifest = manifests[p.id],
             base = bases.current[p.id];
+          if (!manifest && base) {
+            // Project was deleted on the cloud; remove locally
+            delete bases.current[p.id];
+            local.current = local.current.filter((x) => x.id !== p.id);
+            rawSetProjects(local.current);
+            await persist();
+            continue;
+          }
           if (manifest && (!base || manifest.revision > base.revision)) {
             pending = true;
             continue;
@@ -344,9 +386,28 @@ export function useWorkspace() {
       setAuthBusy(false);
     }
   }
+  const deleteProject = useCallback(
+    async (id: string) => {
+      const remaining = local.current.filter((p) => p.id !== id);
+      delete bases.current[id];
+      local.current = remaining;
+      rawSetProjects(remaining);
+      await persist();
+      if (user) {
+        try {
+          await deleteCloudProject(user.uid, id);
+        } catch (e) {
+          console.error('Failed to delete cloud project:', e);
+        }
+      }
+    },
+    [persist, user],
+  );
+
   return {
     projects,
     setProjects,
+    deleteProject,
     loaded,
     user,
     scope,

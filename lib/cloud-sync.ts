@@ -1,5 +1,6 @@
 import {
   collection,
+  deleteDoc,
   doc,
   getDoc,
   onSnapshot,
@@ -296,4 +297,8 @@ export async function cloudManifest(userId: string, id: string) {
     doc(firebaseClient().db, 'users', userId, 'projects', id),
   );
   return snap.exists() ? (snap.data() as Manifest) : undefined;
+}
+export async function deleteCloudProject(userId: string, id: string) {
+  const { db } = firebaseClient();
+  await deleteDoc(doc(db, 'users', userId, 'projects', id));
 }

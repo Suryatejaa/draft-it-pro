@@ -23,6 +23,7 @@ import {
   X,
   Save,
   Palette,
+  Trash2,
 } from 'lucide-react';
 import {
   SidebarProvider,
@@ -203,6 +204,7 @@ export default function Home() {
   const {
     projects,
     setProjects,
+    deleteProject,
     loaded,
     user,
     scope,
@@ -884,7 +886,7 @@ export default function Home() {
           {dashboard ? (
             <div className="projects-grid">
               {projects.map((p, i) => (
-                <button
+                <div
                   className="project-card"
                   key={p.id}
                   onClick={() => {
@@ -896,20 +898,55 @@ export default function Home() {
                     setEpisodeId(p.episodes?.[0]?.id ?? '');
                     setDashboard(false);
                   }}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      setProjectId(p.id);
+                      setSceneId('');
+                      setView(
+                        p.kind === 'series' ? 'Series overview' : 'Scene cards',
+                      );
+                      setEpisodeId(p.episodes?.[0]?.id ?? '');
+                      setDashboard(false);
+                    }
+                  }}
                 >
-                  <div className={'project-cover cover' + i}>
+                  <div className={'project-cover cover' + (i % 3)}>
                     <span>{p.format}</span>
                     <h2>{p.title}</h2>
                     <Clapperboard size={30} />
                   </div>
                   <div className="project-info">
-                    <h3>
-                      {p.title}
-                      <ArrowUpRight size={17} />
-                    </h3>
+                    <div className="project-info-header">
+                      <h3>
+                        {p.title}
+                        <ArrowUpRight size={17} />
+                      </h3>
+                      {projects.length > 1 && (
+                        <button
+                          type="button"
+                          className="delete-project-btn"
+                          title="Delete project"
+                          aria-label={`Delete ${p.title}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (
+                              window.confirm(
+                                `Are you sure you want to delete "${p.title}"?`,
+                              )
+                            ) {
+                              deleteProject(p.id);
+                            }
+                          }}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      )}
+                    </div>
                     <p>
                       {p.kind === 'series'
-                        ? 'Web series · ' + p.episodes?.length + ' episodes'
+                        ? 'Web series · ' + (p.episodes?.length ?? 0) + ' episodes'
                         : p.format + ' · ' + p.scenes.length + ' scenes'}{' '}
                       · {p.draft}
                     </p>
@@ -917,7 +954,7 @@ export default function Home() {
                       Edited {new Date(p.updatedAt).toLocaleDateString()}
                     </small>
                   </div>
-                </button>
+                </div>
               ))}
             </div>
           ) : (
