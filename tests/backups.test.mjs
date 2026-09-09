@@ -1,0 +1,21 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import ts from 'typescript';
+import {createSeries} from '../lib/project.ts';
+const path=new URL('../lib/.backups-test.mjs',import.meta.url);
+const source=fs.readFileSync(new URL('../lib/backups.ts',import.meta.url),'utf8').replace("from './project'", "from './project.ts'");
+fs.writeFileSync(path,ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText);
+try{const {backupDelay,retainBackups}=await import(path.href);
+assert.equal(backupDelay({enabled:false,intervalMinutes:5},0,1000000),null);
+assert.equal(backupDelay({enabled:true,intervalMinutes:5},1000000,1000000),300000);
+assert.equal(backupDelay({enabled:true,intervalMinutes:5},1000000,1300000),0);
+assert.equal(backupDelay({enabled:true,intervalMinutes:5},1000000,2300000),0);
+assert.equal(backupDelay({enabled:true,intervalMinutes:60},1000000,1300000),3300000);
+const series=createSeries('Test series',2);let records=[];
+for(let i=0;i<7;i++)records=retainBackups(records,series,i);
+assert.equal(records.length,5);assert.deepEqual(records.map(r=>r.savedAt),[6,5,4,3,2]);
+series.episodes[0].title='Changed after backup';
+assert.equal(records[0].project.episodes[0].title,'Pilot');
+assert.equal(records[0].project.episodes.length,2);
+console.log('Backup toggle, interval changes, resume timing, retention, and independent full-series snapshots passed.');
+}finally{fs.unlinkSync(path)}

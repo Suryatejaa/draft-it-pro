@@ -1,0 +1,21 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId}/projects/{projectId} {
+      function owner() { return request.auth != null && request.auth.uid == userId; }
+      function valid() {
+        return request.resource.data.keys().hasOnly(['revision','path','hash','title','updatedAt'])
+          && request.resource.data.revision is int
+          && request.resource.data.hash is string && request.resource.data.hash.matches('^[a-f0-9]{64}$')
+          && request.resource.data.title is string && request.resource.data.title.size() <= 1000
+          && request.resource.data.path is string
+          && request.resource.data.path.matches('^users/' + userId + '/projects/' + projectId + '/snapshots/[a-zA-Z0-9-]+[.]json$')
+          && request.resource.data.updatedAt == request.time;
+      }
+      allow read: if owner();
+      allow create: if owner() && valid() && request.resource.data.revision == 1;
+      allow update: if owner() && valid() && request.resource.data.revision == resource.data.revision + 1;
+      allow delete: if owner();
+    }
+  }
+}
