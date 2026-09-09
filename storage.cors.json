@@ -1,3 +1,8 @@
 [
-  { "origin": ["http://localhost:3000"], "method": ["GET"], "maxAgeSeconds": 3600 }
+  {
+    "origin": ["http://localhost:3000", "https://draft-it-pro.vercel.app", "https://*.vercel.app"],
+    "method": ["GET", "PUT", "POST", "HEAD", "DELETE"],
+    "responseHeader": ["*"],
+    "maxAgeSeconds": 3600
+  }
 ]
