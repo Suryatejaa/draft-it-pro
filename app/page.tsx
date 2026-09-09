@@ -24,7 +24,18 @@ import {
   Save,
   Palette,
   Trash2,
+  Sparkles,
+  Copy,
+  RefreshCw,
 } from 'lucide-react';
+import { planSceneStoryboard } from '@/lib/storyboard-planner';
+import {
+  buildStoryboardPrompt,
+  computeSceneContentHash,
+  shotSizeLabel,
+  cameraAngleLabel,
+  cameraMovementLabel,
+} from '@/lib/prompt-compiler';
 import {
   SidebarProvider,
   Sidebar,
@@ -244,6 +255,12 @@ export default function Home() {
     [entityId, setEntityId] = useState(''),
     [newEntity, setNewEntity] = useState(false),
     [panelEdit, setPanelEdit] = useState<Panel | null>(null),
+    [promptModalPanel, setPromptModalPanel] = useState<Panel | null>(null),
+    [autoPlanScene, setAutoPlanScene] = useState<Scene | null>(null),
+    [replacePanels, setReplacePanels] = useState(false),
+    [copiedPrompt, setCopiedPrompt] = useState(false),
+    [editingCustomPrompt, setEditingCustomPrompt] = useState(false),
+    [customPromptDraft, setCustomPromptDraft] = useState(''),
     [exporting, setExporting] = useState(false),
     [actName, setActName] = useState(''),
     [addAct, setAddAct] = useState(false),
@@ -1640,52 +1657,102 @@ export default function Home() {
                     <>
                       <div className="scene-section-title">
                         <h2>{scene.heading}</h2>
-                        <span>
-                          {
-                            project.panels.filter((p) => p.sceneId === scene.id)
-                              .length
-                          }{' '}
-                          panels
-                        </span>
+                        <div className="scene-title-actions">
+                          <span>
+                            {
+                              project.panels.filter((p) => p.sceneId === scene.id)
+                                .length
+                            }{' '}
+                            panels
+                          </span>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="auto-plan-btn"
+                            onClick={() => {
+                              const existingCount = project.panels.filter((p) => p.sceneId === scene.id).length;
+                              setReplacePanels(existingCount > 0);
+                              setAutoPlanScene(scene);
+                            }}
+                          >
+                            <Sparkles size={14} /> Auto plan scene
+                          </Button>
+                        </div>
                       </div>
                       <div className="panels-grid">
                         {project.panels
                           .filter((p) => p.sceneId === scene.id)
-                          .map((p, i) => (
-                            <button
-                              className="panel-card"
-                              key={p.id}
-                              onClick={() => setPanelEdit({ ...p })}
-                            >
-                              <div className="frame">
-                                {p.image ? (
-                                  <img
-                                    alt={p.description || 'Storyboard frame'}
-                                    src={p.image}
-                                  />
-                                ) : (
-                                  <div>
-                                    <ImagePlus size={30} />
-                                    <span>Add a storyboard image</span>
+                          .map((p, i) => {
+                            const sceneHash = computeSceneContentHash(scene);
+                            const isOutdated = !!(p.sourceContentHash && p.sourceContentHash !== sceneHash);
+                            const shotLabel = pad(project.scenes.indexOf(scene) + 1) + String.fromCharCode(65 + (i % 26));
+                            return (
+                              <div className="panel-card-container" key={p.id}>
+                                <div
+                                  className="panel-card"
+                                  onClick={() => setPanelEdit({ ...p })}
+                                  role="button"
+                                  tabIndex={0}
+                                >
+                                  <div className="frame">
+                                    {p.image ? (
+                                      <img
+                                        alt={p.description || 'Storyboard frame'}
+                                        src={p.image}
+                                      />
+                                    ) : (
+                                      <div>
+                                        <ImagePlus size={30} />
+                                        <span>Add a storyboard image</span>
+                                      </div>
+                                    )}
+                                    <b>{shotLabel}</b>
+                                    {isOutdated && (
+                                      <span className="outdated-scene-badge" title="Screenplay scene has changed since this panel was planned">
+                                        ⚠ Scene changed
+                                      </span>
+                                    )}
                                   </div>
-                                )}
-                                <b>
-                                  {pad(project.scenes.indexOf(scene) + 1) +
-                                    String.fromCharCode(65 + i)}
-                                </b>
+                                  <div className="panel-body">
+                                    <h3>
+                                      {p.size}
+                                      <span>{p.duration}s</span>
+                                    </h3>
+                                    <p>{p.description || 'Describe this frame.'}</p>
+                                    <small>
+                                      {p.lens} · {p.movement}
+                                    </small>
+                                  </div>
+                                </div>
+                                <div className="panel-card-footer">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="panel-prompt-btn"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setPromptModalPanel({ ...p });
+                                      setEditingCustomPrompt(false);
+                                      setCustomPromptDraft(p.customPrompt ?? p.generatedPrompt ?? '');
+                                    }}
+                                  >
+                                    <FileText size={12} /> Prompt
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="panel-edit-btn"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setPanelEdit({ ...p });
+                                    }}
+                                  >
+                                    Edit
+                                  </Button>
+                                </div>
                               </div>
-                              <div className="panel-body">
-                                <h3>
-                                  {p.size}
-                                  <span>{p.duration}s</span>
-                                </h3>
-                                <p>{p.description || 'Describe this frame.'}</p>
-                                <small>
-                                  {p.lens} · {p.movement}
-                                </small>
-                              </div>
-                            </button>
-                          ))}
+                            );
+                          })}
                         <button className="new-panel" onClick={addPanel}>
                           <Plus size={26} />
                           Add a panel
@@ -2357,50 +2424,115 @@ export default function Home() {
             </SheetDescription>
           </SheetHeader>
           <div className="inspector-body">
-            {person &&
-              (
-                [
-                  'role',
-                  'description',
-                  'goals',
-                  'fear',
-                  'backstory',
-                  'arc',
-                  'notes',
-                ] as const
-              ).map((k) => (
+            {person && (
+              <>
                 <Field
-                  key={k}
-                  label={k}
-                  value={person[k]}
+                  label="Role"
+                  value={person.role}
                   onChange={(v) =>
                     update((p) => ({
                       ...p,
                       characters: p.characters.map((c) =>
-                        c.id === person.id ? { ...c, [k]: v } : c,
+                        c.id === person.id ? { ...c, role: v } : c,
                       ),
                     }))
                   }
-                  multiline={k !== 'role'}
                 />
-              ))}
-            {place &&
-              (['description', 'notes'] as const).map((k) => (
                 <Field
-                  key={k}
-                  label={k}
-                  value={place[k]}
+                  label="Description"
+                  value={person.description}
                   onChange={(v) =>
                     update((p) => ({
                       ...p,
-                      locations: p.locations.map((l) =>
-                        l.id === place.id ? { ...l, [k]: v } : l,
+                      characters: p.characters.map((c) =>
+                        c.id === person.id ? { ...c, description: v } : c,
                       ),
                     }))
                   }
                   multiline
                 />
-              ))}
+                <Field
+                  label="Storyboard visual profile (appearance for prompts)"
+                  value={person.visualDescription ?? ''}
+                  onChange={(v) =>
+                    update((p) => ({
+                      ...p,
+                      characters: p.characters.map((c) =>
+                        c.id === person.id ? { ...c, visualDescription: v } : c,
+                      ),
+                    }))
+                  }
+                  multiline
+                />
+                {(
+                  [
+                    'goals',
+                    'fear',
+                    'backstory',
+                    'arc',
+                    'notes',
+                  ] as const
+                ).map((k) => (
+                  <Field
+                    key={k}
+                    label={k}
+                    value={person[k]}
+                    onChange={(v) =>
+                      update((p) => ({
+                        ...p,
+                        characters: p.characters.map((c) =>
+                          c.id === person.id ? { ...c, [k]: v } : c,
+                        ),
+                      }))
+                    }
+                    multiline
+                  />
+                ))}
+              </>
+            )}
+            {place && (
+              <>
+                <Field
+                  label="Description"
+                  value={place.description}
+                  onChange={(v) =>
+                    update((p) => ({
+                      ...p,
+                      locations: p.locations.map((l) =>
+                        l.id === place.id ? { ...l, description: v } : l,
+                      ),
+                    }))
+                  }
+                  multiline
+                />
+                <Field
+                  label="Storyboard visual profile (appearance for prompts)"
+                  value={place.visualDescription ?? ''}
+                  onChange={(v) =>
+                    update((p) => ({
+                      ...p,
+                      locations: p.locations.map((l) =>
+                        l.id === place.id ? { ...l, visualDescription: v } : l,
+                      ),
+                    }))
+                  }
+                  multiline
+                />
+                <Field
+                  label="Notes"
+                  value={place.notes}
+                  onChange={(v) =>
+                    update((p) => ({
+                      ...p,
+                      locations: p.locations.map((l) =>
+                        l.id === place.id ? { ...l, notes: v } : l,
+                      ),
+                    }))
+                  }
+                  multiline
+                />
+              </>
+            )}
             <Button
               variant="outline"
               className="delete-element"
@@ -2584,6 +2716,367 @@ export default function Home() {
               )}
             </>
           )}
+        </DialogContent>
+      </Dialog>
+      {/* Storyboard Prompt Modal */}
+      <Dialog
+        open={!!promptModalPanel}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPromptModalPanel(null);
+            setEditingCustomPrompt(false);
+          }
+        }}
+      >
+        <DialogContent className="prompt-dialog">
+          <DialogTitle>Storyboard Prompt</DialogTitle>
+          <DialogDescription>
+            Deterministic production prompt compiled directly from your screenplay.
+          </DialogDescription>
+          {promptModalPanel && (() => {
+            const currentScene = project.scenes.find((s) => s.id === promptModalPanel.sceneId) ?? scene;
+            const currentHash = currentScene ? computeSceneContentHash(currentScene) : '';
+            const isChanged = !!(promptModalPanel.sourceContentHash && promptModalPanel.sourceContentHash !== currentHash);
+
+            const effectivePrompt = promptModalPanel.customPrompt ?? promptModalPanel.generatedPrompt ?? (
+              currentScene
+                ? buildStoryboardPrompt(
+                    currentScene,
+                    promptModalPanel.shotIntent ?? {
+                      id: promptModalPanel.id,
+                      sceneId: currentScene.id,
+                      panelNumber: '01A',
+                      shotSize: 'wide',
+                      angle: 'eye_level',
+                      movement: 'static',
+                      purpose: 'establish',
+                      description: promptModalPanel.description,
+                      characterIds: currentScene.characterIds,
+                      lens: promptModalPanel.lens,
+                    },
+                    project.characters,
+                    project.locations.find((l) => l.id === currentScene.locationId),
+                    project.aspectRatio || '16:9',
+                    project.storyboardStyle || 'pencil',
+                  )
+                : ''
+            );
+
+            return (
+              <div className="prompt-modal-content">
+                <div className="prompt-meta-header">
+                  <div className="prompt-scene-tag">{currentScene?.heading}</div>
+                  <div className="prompt-shot-tags">
+                    <span>{promptModalPanel.size}</span>
+                    <span>{promptModalPanel.angle || 'Eye-level'}</span>
+                    <span>{promptModalPanel.lens || '35mm'}</span>
+                    <span>{promptModalPanel.movement || 'Static'}</span>
+                  </div>
+                </div>
+
+                {isChanged && (
+                  <div className="prompt-outdated-alert">
+                    <span>⚠ Screenplay has changed since this prompt was planned</span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        if (!currentScene) return;
+                        const regenerated = buildStoryboardPrompt(
+                          currentScene,
+                          promptModalPanel.shotIntent ?? {
+                            id: promptModalPanel.id,
+                            sceneId: currentScene.id,
+                            panelNumber: '01A',
+                            shotSize: 'wide',
+                            angle: 'eye_level',
+                            movement: 'static',
+                            purpose: 'establish',
+                            description: promptModalPanel.description,
+                            characterIds: currentScene.characterIds,
+                            lens: promptModalPanel.lens,
+                          },
+                          project.characters,
+                          project.locations.find((l) => l.id === currentScene.locationId),
+                          project.aspectRatio || '16:9',
+                          project.storyboardStyle || 'pencil',
+                        );
+                        const updatedPanel: Panel = {
+                          ...promptModalPanel,
+                          generatedPrompt: regenerated,
+                          customPrompt: undefined,
+                          sourceContentHash: currentHash,
+                        };
+                        update((p) => ({
+                          ...p,
+                          panels: p.panels.map((x) => x.id === updatedPanel.id ? updatedPanel : x),
+                        }));
+                        setPromptModalPanel(updatedPanel);
+                        setEditingCustomPrompt(false);
+                        setNotice('Prompt regenerated with latest scene changes.');
+                      }}
+                    >
+                      <RefreshCw size={12} /> Refresh prompt
+                    </Button>
+                  </div>
+                )}
+
+                <div className="prompt-box">
+                  {editingCustomPrompt ? (
+                    <Textarea
+                      className="prompt-textarea"
+                      rows={12}
+                      value={customPromptDraft}
+                      onChange={(e) => setCustomPromptDraft(e.target.value)}
+                    />
+                  ) : (
+                    <pre className="prompt-text-display">{effectivePrompt}</pre>
+                  )}
+                </div>
+
+                <div className="prompt-modal-actions">
+                  <Button
+                    className="copy-prompt-btn"
+                    onClick={() => {
+                      navigator.clipboard.writeText(editingCustomPrompt ? customPromptDraft : effectivePrompt);
+                      setCopiedPrompt(true);
+                      setTimeout(() => setCopiedPrompt(false), 2000);
+                    }}
+                  >
+                    {copiedPrompt ? <Check size={15} /> : <Copy size={15} />}
+                    {copiedPrompt ? 'Copied to clipboard!' : 'Copy prompt'}
+                  </Button>
+
+                  {editingCustomPrompt ? (
+                    <>
+                      <Button
+                        variant="default"
+                        onClick={() => {
+                          const updatedPanel: Panel = {
+                            ...promptModalPanel,
+                            customPrompt: customPromptDraft.trim(),
+                          };
+                          update((p) => ({
+                            ...p,
+                            panels: p.panels.map((x) => x.id === updatedPanel.id ? updatedPanel : x),
+                          }));
+                          setPromptModalPanel(updatedPanel);
+                          setEditingCustomPrompt(false);
+                          setNotice('Custom prompt saved.');
+                        }}
+                      >
+                        Save custom prompt
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        onClick={() => setEditingCustomPrompt(false)}
+                      >
+                        Cancel
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          if (!currentScene) return;
+                          const regenerated = buildStoryboardPrompt(
+                            currentScene,
+                            promptModalPanel.shotIntent ?? {
+                              id: promptModalPanel.id,
+                              sceneId: currentScene.id,
+                              panelNumber: '01A',
+                              shotSize: 'wide',
+                              angle: 'eye_level',
+                              movement: 'static',
+                              purpose: 'establish',
+                              description: promptModalPanel.description,
+                              characterIds: currentScene.characterIds,
+                              lens: promptModalPanel.lens,
+                            },
+                            project.characters,
+                            project.locations.find((l) => l.id === currentScene.locationId),
+                            project.aspectRatio || '16:9',
+                            project.storyboardStyle || 'pencil',
+                          );
+                          const updatedPanel: Panel = {
+                            ...promptModalPanel,
+                            generatedPrompt: regenerated,
+                            customPrompt: undefined,
+                            sourceContentHash: currentHash,
+                          };
+                          update((p) => ({
+                            ...p,
+                            panels: p.panels.map((x) => x.id === updatedPanel.id ? updatedPanel : x),
+                          }));
+                          setPromptModalPanel(updatedPanel);
+                          setNotice('Regenerated prompt from scene structure.');
+                        }}
+                      >
+                        <RefreshCw size={13} /> Regenerate from scene
+                      </Button>
+
+                      <Button
+                        variant="ghost"
+                        onClick={() => {
+                          setCustomPromptDraft(effectivePrompt);
+                          setEditingCustomPrompt(true);
+                        }}
+                      >
+                        Edit prompt
+                      </Button>
+
+                      {promptModalPanel.customPrompt && (
+                        <Button
+                          variant="ghost"
+                          className="text-xs text-muted-foreground"
+                          onClick={() => {
+                            const updatedPanel: Panel = {
+                              ...promptModalPanel,
+                              customPrompt: undefined,
+                            };
+                            update((p) => ({
+                              ...p,
+                              panels: p.panels.map((x) => x.id === updatedPanel.id ? updatedPanel : x),
+                            }));
+                            setPromptModalPanel(updatedPanel);
+                            setNotice('Reset to generated prompt.');
+                          }}
+                        >
+                          Reset to generated
+                        </Button>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* Auto Storyboard Plan Modal */}
+      <Dialog
+        open={!!autoPlanScene}
+        onOpenChange={(open) => {
+          if (!open) setAutoPlanScene(null);
+        }}
+      >
+        <DialogContent className="auto-plan-dialog">
+          <DialogTitle>Auto Storyboard Plan</DialogTitle>
+          <DialogDescription>
+            Converts screenplay scenes into editable shot suggestions and production-ready visual prompts.
+          </DialogDescription>
+          {autoPlanScene && (() => {
+            const plan = planSceneStoryboard(
+              autoPlanScene,
+              project.scenes.indexOf(autoPlanScene),
+              project.characters,
+              project.locations,
+            );
+            const scenePanelsCount = project.panels.filter((p) => p.sceneId === autoPlanScene.id).length;
+
+            return (
+              <div className="auto-plan-content">
+                <div className="auto-plan-scene-heading">{autoPlanScene.heading}</div>
+                <div className="auto-plan-badges">
+                  <span className="pill-badge">{plan.detectedBeatsCount} visual beats</span>
+                  <span className="pill-badge">{plan.speakingCharacters.length} speaking characters</span>
+                  <span className="pill-badge">{plan.locationName}</span>
+                  {plan.propsFound.length > 0 && (
+                    <span className="pill-badge">{plan.propsFound.length} prop(s): {plan.propsFound.join(', ')}</span>
+                  )}
+                </div>
+
+                <div className="auto-plan-shots-list">
+                  <h4>Suggested Panels</h4>
+                  <div className="shots-scroll">
+                    {plan.suggestedPanels.map((shot) => (
+                      <div className="suggested-shot-row" key={shot.id}>
+                        <div className="shot-row-badge">
+                          <Check size={14} className="text-green-600" />
+                          <b>{shot.panelNumber}</b>
+                        </div>
+                        <div className="shot-row-details">
+                          <div className="shot-row-type">
+                            <span className="font-semibold text-slate-800">{shotSizeLabel(shot.shotSize)}</span>
+                            <span className="text-slate-400">·</span>
+                            <span className="text-slate-600">{shot.lens || '35mm'}</span>
+                            <span className="text-slate-400">·</span>
+                            <span className="text-slate-600">{cameraMovementLabel(shot.movement)}</span>
+                          </div>
+                          <p className="shot-row-desc">{shot.description}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {scenePanelsCount > 0 && (
+                  <label className="replace-panels-toggle">
+                    <input
+                      type="checkbox"
+                      checked={replacePanels}
+                      onChange={(e) => setReplacePanels(e.target.checked)}
+                    />
+                    <span>Replace existing {scenePanelsCount} panel(s) in this scene</span>
+                  </label>
+                )}
+
+                <div className="auto-plan-actions">
+                  <Button
+                    className="create-panels-btn"
+                    onClick={() => {
+                      const sceneHash = computeSceneContentHash(autoPlanScene);
+                      const generatedPanels: Panel[] = plan.suggestedPanels.map((shot) => {
+                        const prompt = buildStoryboardPrompt(
+                          autoPlanScene,
+                          shot,
+                          project.characters,
+                          project.locations.find((l) => l.id === autoPlanScene.locationId),
+                          project.aspectRatio || '16:9',
+                          project.storyboardStyle || 'pencil',
+                        );
+                        return {
+                          id: uid(),
+                          sceneId: autoPlanScene.id,
+                          size: shotSizeLabel(shot.shotSize),
+                          angle: cameraAngleLabel(shot.angle),
+                          lens: shot.lens || '35mm',
+                          movement: cameraMovementLabel(shot.movement),
+                          duration: shot.duration || 3,
+                          description: shot.description,
+                          status: 'Planned',
+                          shotIntent: shot,
+                          generatedPrompt: prompt,
+                          promptVersion: 1,
+                          sourceContentHash: sceneHash,
+                        };
+                      });
+
+                      update((p) => {
+                        const remaining = replacePanels
+                          ? p.panels.filter((x) => x.sceneId !== autoPlanScene.id)
+                          : p.panels;
+                        return {
+                          ...p,
+                          panels: [...remaining, ...generatedPanels],
+                        };
+                      });
+
+                      setAutoPlanScene(null);
+                      setNotice(`Created ${generatedPanels.length} storyboard panels with deterministic prompts.`);
+                    }}
+                  >
+                    <Sparkles size={15} /> Create {plan.suggestedPanels.length} panels
+                  </Button>
+                  <Button variant="ghost" onClick={() => setAutoPlanScene(null)}>
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            );
+          })()}
         </DialogContent>
       </Dialog>
       <AlertDialog

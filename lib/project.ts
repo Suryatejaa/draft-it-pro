@@ -11,12 +11,66 @@ export const elementTypes = [
 ] as const;
 export type ElementType = (typeof elementTypes)[number];
 export type Block = { id: string; type: ElementType; content: string };
+export type ShotSize =
+  | 'extreme_wide'
+  | 'wide'
+  | 'medium_wide'
+  | 'medium'
+  | 'medium_close'
+  | 'close_up'
+  | 'extreme_close_up'
+  | 'insert'
+  | 'over_shoulder'
+  | 'two_shot';
+
+export type CameraAngle =
+  | 'eye_level'
+  | 'high'
+  | 'low'
+  | 'top_down'
+  | 'dutch';
+
+export type CameraMovement =
+  | 'static'
+  | 'pan'
+  | 'tilt'
+  | 'push_in'
+  | 'pull_out'
+  | 'tracking'
+  | 'handheld';
+
+export type ShotPurpose =
+  | 'establish'
+  | 'dialogue'
+  | 'reaction'
+  | 'action'
+  | 'insert'
+  | 'transition';
+
+export interface StoryboardShotIntent {
+  id: string;
+  sceneId: string;
+  panelNumber: string;
+  subjectIds?: string[];
+  shotSize: ShotSize;
+  angle: CameraAngle;
+  movement: CameraMovement;
+  purpose: ShotPurpose;
+  description: string;
+  locationId?: string;
+  characterIds: string[];
+  propIds?: string[];
+  duration?: number;
+  lens?: string;
+}
+
 export type Person = {
   generated?: boolean;
   id: string;
   name: string;
   role: string;
   description: string;
+  visualDescription?: string;
   goals: string;
   fear: string;
   backstory: string;
@@ -28,6 +82,7 @@ export type Place = {
   id: string;
   name: string;
   description: string;
+  visualDescription?: string;
   notes: string;
 };
 export type Panel = {
@@ -41,6 +96,11 @@ export type Panel = {
   description: string;
   image?: string;
   status: string;
+  shotIntent?: StoryboardShotIntent;
+  generatedPrompt?: string;
+  customPrompt?: string;
+  promptVersion?: number;
+  sourceContentHash?: string;
 };
 export type Scene = {
   colour?: string;
@@ -85,6 +145,8 @@ export type Project = {
   locations: Place[];
   panels: Panel[];
   acts: string[];
+  aspectRatio?: '16:9' | '9:16' | '4:3' | '2.39:1' | '1.85:1';
+  storyboardStyle?: 'pencil' | 'marker' | 'ink' | 'grayscale' | 'line_art';
 };
 export function blankProject(title: string, format: string): Project {
   if (format === 'Series') return createSeries(title);

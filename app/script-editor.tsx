@@ -18,6 +18,7 @@ import {
   DropdownMenuItem,
 } from '@/components/ui/dropdown-menu';
 import { ChevronDown, Undo2, Redo2, Trash2 } from 'lucide-react';
+
 const nextType: Record<string, ElementType> = {
   scene_heading: 'action',
   action: 'action',
@@ -28,16 +29,101 @@ const nextType: Record<string, ElementType> = {
   shot: 'action',
   general: 'action',
 };
+
 const tabType: Record<string, ElementType> = {
   scene_heading: 'action',
   action: 'character',
-  character: 'dialogue',
+  character: 'action',
   dialogue: 'parenthetical',
   parenthetical: 'dialogue',
   transition: 'scene_heading',
   shot: 'action',
+  general: 'character',
+};
+
+const prevTabType: Record<string, ElementType> = {
+  scene_heading: 'transition',
+  action: 'character',
+  character: 'parenthetical',
+  dialogue: 'character',
+  parenthetical: 'dialogue',
+  transition: 'dialogue',
+  shot: 'action',
   general: 'action',
 };
+
+export const slashShortcuts: { code: string; type: ElementType; label: string }[] = [
+  { code: '/sc', type: 'scene_heading', label: 'Scene Heading' },
+  { code: '/ac', type: 'action', label: 'Action' },
+  { code: '/ch', type: 'character', label: 'Character' },
+  { code: '/di', type: 'dialogue', label: 'Dialogue' },
+  { code: '/pa', type: 'parenthetical', label: 'Parenthetical' },
+  { code: '/tr', type: 'transition', label: 'Transition' },
+  { code: '/sh', type: 'shot', label: 'Shot' },
+];
+
+export function normalizeScreenplayBlocks(blocks: Block[]): Block[] {
+  const result: Block[] = [];
+  for (const b of blocks) {
+    const raw = b.content ?? '';
+    if (raw.includes('\n')) {
+      const lines = raw
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0);
+      if (lines.length === 0) {
+        result.push({ ...b, content: '' });
+      } else if (b.type === 'transition') {
+        result.push({
+          id: b.id,
+          type: 'transition',
+          content: lines[0],
+        });
+        for (let i = 1; i < lines.length; i++) {
+          result.push({
+            id: uid(),
+            type: 'action',
+            content: lines[i],
+          });
+        }
+      } else if (b.type === 'character') {
+        result.push({
+          id: b.id,
+          type: 'character',
+          content: lines[0].toUpperCase(),
+        });
+        if (lines.length > 1) {
+          result.push({
+            id: uid(),
+            type: 'dialogue',
+            content: lines.slice(1).join(' '),
+          });
+        }
+      } else {
+        for (let i = 0; i < lines.length; i++) {
+          result.push({
+            id: i === 0 ? b.id : uid(),
+            type: b.type === 'scene_heading' && i > 0 ? 'action' : b.type,
+            content: lines[i],
+          });
+        }
+      }
+    } else {
+      let content = raw;
+      if (b.type === 'character' || b.type === 'transition') {
+        content = raw.trim();
+      } else if (b.type === 'dialogue' || b.type === 'parenthetical') {
+        content = raw.trimStart();
+      }
+      result.push({
+        ...b,
+        content,
+      });
+    }
+  }
+  return result;
+}
+
 const ScriptFormat = Extension.create({
   name: 'scriptFormat',
   addGlobalAttributes() {
@@ -63,8 +149,44 @@ const ScriptFormat = Extension.create({
           kind: tabType[kind] ?? 'action',
         });
       },
-      Enter: () => {
+      'Shift-Tab': () => {
         const kind = this.editor.getAttributes('paragraph').kind;
+        return this.editor.commands.updateAttributes('paragraph', {
+          kind: prevTabType[kind] ?? 'action',
+        });
+      },
+      Space: () => {
+        const { state } = this.editor;
+        const { selection } = state;
+        const parent = selection.$from.parent;
+        const text = parent.textContent.trim();
+        const match = slashShortcuts.find((s) => text === s.code);
+        if (match) {
+          return this.editor
+            .chain()
+            .deleteRange({ from: selection.$from.start(), to: selection.$from.end() })
+            .updateAttributes('paragraph', { kind: match.type })
+            .run();
+        }
+        return false;
+      },
+      Enter: () => {
+        const { state } = this.editor;
+        const { selection } = state;
+        const parent = selection.$from.parent;
+        const text = parent.textContent.trim();
+        const match = slashShortcuts.find((s) => text === s.code);
+        if (match) {
+          return this.editor
+            .chain()
+            .deleteRange({ from: selection.$from.start(), to: selection.$from.end() })
+            .updateAttributes('paragraph', { kind: match.type })
+            .run();
+        }
+        const kind = this.editor.getAttributes('paragraph').kind ?? 'action';
+        if (kind === 'character' && !text) {
+          return this.editor.commands.updateAttributes('paragraph', { kind: 'action' });
+        }
         return this.editor
           .chain()
           .splitBlock()
@@ -77,6 +199,7 @@ const ScriptFormat = Extension.create({
     };
   },
 });
+
 export default function ScriptEditor({
   scene,
   onChange,
@@ -90,6 +213,10 @@ export default function ScriptEditor({
   callback.current = onChange;
   const [active, setActive] = useState('action');
   const [slash, setSlash] = useState(false);
+  const [zoom, setZoom] = useState<number>(1);
+
+  const initialBlocks = normalizeScreenplayBlocks(scene.blocks);
+
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
@@ -105,7 +232,7 @@ export default function ScriptEditor({
     immediatelyRender: false,
     content: {
       type: 'doc',
-      content: scene.blocks.map((b) => ({
+      content: initialBlocks.map((b) => ({
         type: 'paragraph',
         attrs: { kind: b.type, blockId: b.id },
         content: b.content ? [{ type: 'text', text: b.content }] : [],
@@ -120,21 +247,30 @@ export default function ScriptEditor({
     onSelectionUpdate: ({ editor }) =>
       setActive(editor.getAttributes('paragraph').kind),
     onUpdate: ({ editor }) => {
-      const blocks: Block[] = (editor.getJSON().content ?? []).map((n) => ({
-        id: n.attrs?.blockId ?? uid(),
-        type: n.attrs?.kind ?? 'action',
-        content: (n.content ?? [])
+      const blocks: Block[] = (editor.getJSON().content ?? []).map((n) => {
+        let content = (n.content ?? [])
           .map((t) => ('text' in t ? (t.text ?? '') : ''))
-          .join(''),
-      }));
+          .join('');
+        const kind = (n.attrs?.kind ?? 'action') as ElementType;
+        if (kind === 'character' || kind === 'transition') {
+          content = content.trim();
+        }
+        return {
+          id: n.attrs?.blockId ?? uid(),
+          type: kind,
+          content,
+        };
+      });
       callback.current(blocks);
       setActive(editor.getAttributes('paragraph').kind);
       const parent = editor.state.selection.$from.parent.textContent;
       setSlash(parent.startsWith('/'));
     },
   });
+
   useEffect(() => {
     if (!editor) return;
+    const normalized = normalizeScreenplayBlocks(scene.blocks);
     const live = (editor.getJSON().content ?? []).map((n) => ({
       type: n.attrs?.kind ?? 'action',
       content: (n.content ?? [])
@@ -144,13 +280,13 @@ export default function ScriptEditor({
     if (
       JSON.stringify(live) !==
       JSON.stringify(
-        scene.blocks.map(({ type, content }) => ({ type, content })),
+        normalized.map(({ type, content }) => ({ type, content })),
       )
-    )
+    ) {
       editor.commands.setContent(
         {
           type: 'doc',
-          content: scene.blocks.map((b) => ({
+          content: normalized.map((b) => ({
             type: 'paragraph',
             attrs: { kind: b.type, blockId: b.id },
             content: b.content ? [{ type: 'text', text: b.content }] : [],
@@ -158,11 +294,14 @@ export default function ScriptEditor({
         },
         { emitUpdate: false },
       );
+    }
   }, [editor, scene.blocks]);
+
   function format(type: ElementType) {
     if (!editor) return;
-    if (slash) {
-      const { $from } = editor.state.selection;
+    const { $from } = editor.state.selection;
+    const text = $from.parent.textContent;
+    if (text.startsWith('/')) {
       editor
         .chain()
         .focus()
@@ -170,29 +309,37 @@ export default function ScriptEditor({
         .updateAttributes('paragraph', { kind: type })
         .run();
       setSlash(false);
-    } else
+    } else {
       editor
         .chain()
         .focus()
         .updateAttributes('paragraph', { kind: type })
         .run();
+    }
     setActive(type);
   }
+
   return (
     <div className="editor-wrap">
       <div className="editor-toolbar">
-        <DropdownMenu>
-          <DropdownMenuTrigger render={<Button variant="outline" />}>
-            {active.replace('_', ' ')} <ChevronDown size={14} />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent>
-            {elementTypes.map((t) => (
-              <DropdownMenuItem key={t} onClick={() => format(t)}>
+        <div className="element-tabs" role="tablist" aria-label="Screenplay element types">
+          {elementTypes.map((t) => {
+            const isSelected = active === t;
+            return (
+              <button
+                key={t}
+                type="button"
+                role="tab"
+                aria-selected={isSelected}
+                className={`element-tab ${isSelected ? 'active' : ''}`}
+                onClick={() => format(t)}
+              >
                 {t.replace('_', ' ')}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
+              </button>
+            );
+          })}
+        </div>
+        <div className="toolbar-divider" />
         <Button
           variant="ghost"
           size="icon"
@@ -216,7 +363,7 @@ export default function ScriptEditor({
         >
           <Trash2 size={15} />
         </Button>
-        <span>Courier · 12 pt</span>
+        <span>Courier Prime · 12 pt</span>
         <Button
           aria-label="Undo"
           variant="ghost"
@@ -233,20 +380,37 @@ export default function ScriptEditor({
         >
           <Redo2 />
         </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<Button variant="outline" size="sm" />}>
+            {Math.round(zoom * 100)}% <ChevronDown size={12} />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent>
+            <DropdownMenuItem onClick={() => setZoom(1)}>
+              100% (Paper)
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setZoom(0.85)}>
+              85% (Tablet)
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setZoom(0.75)}>
+              75% (Compact)
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <span className="keyboard-tip">
           Tab to change element · / for commands
         </span>
       </div>
       {slash && (
         <div className="slash-menu">
-          {elementTypes.map((t) => (
-            <button key={t} onClick={() => format(t)}>
-              {t.replace('_', ' ')}
+          {slashShortcuts.map((s) => (
+            <button key={s.type} onClick={() => format(s.type)}>
+              <span>{s.label}</span>
+              <span className="shortcut-tag">{s.code}</span>
             </button>
           ))}
         </div>
       )}
-      {active === 'scene_heading' && (
+      {active === 'scene_heading' && locations.length > 0 && (
         <div className="heading-suggestions">
           <span>Locations</span>
           {locations.map((l) => (
@@ -270,12 +434,27 @@ export default function ScriptEditor({
           ))}
         </div>
       )}
-      <div className="paper">
-        <div className="paper-number">SCENE {scene.heading}</div>
-        <EditorContent editor={editor} />
+      <div className="editor-viewport">
+        <div className="scene-indicator-banner">
+          <div className="scene-indicator-badge">SCENE {scene.heading}</div>
+          <div className="text-xs text-muted-foreground font-mono">{scene.act}</div>
+        </div>
+        <div className="screenplay-page-container">
+          <div
+            className="screenplay-page"
+            style={{
+              transform: zoom !== 1 ? `scale(${zoom})` : undefined,
+              transformOrigin: 'top center',
+            }}
+          >
+            <div className="paper-number">SCENE {scene.heading}</div>
+            <EditorContent editor={editor} />
+          </div>
+        </div>
       </div>
       <div className="editor-foot">
-        Scene-linked writing <span>Enter continues your screenplay</span>
+        <span>Scene-linked writing</span>
+        <span>Enter continues your screenplay · Tab cycles element</span>
       </div>
     </div>
   );

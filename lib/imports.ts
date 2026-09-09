@@ -9,6 +9,11 @@ import {
   type Person,
   type Place,
   type Panel,
+  type StoryboardShotIntent,
+  type ShotSize,
+  type CameraAngle,
+  type CameraMovement,
+  type ShotPurpose,
 } from './project';
 export const importTabs = [
   'Story',
@@ -46,6 +51,7 @@ const storyKeys = [
 const personKeys = [
   'role',
   'description',
+  'visualDescription',
   'goals',
   'fear',
   'backstory',
@@ -148,6 +154,7 @@ export function importTemplate(tab: ImportTab, p: Project) {
       name: 'BOY',
       role: 'Lead',
       description: 'Reserved and thoughtful.',
+      visualDescription: 'Teenage Indian boy, messy hair, worn hoodie, soft features lit by phone glow.',
       goals: 'Reconnect.',
       fear: 'Rejection.',
       backstory: '',
@@ -159,6 +166,7 @@ export function importTemplate(tab: ImportTab, p: Project) {
     {
       name: "BOY'S BEDROOM",
       description: 'A small room with a rain-streaked window.',
+      visualDescription: 'Cramped teenage bedroom, single bed, desk cluttered with books, blue-tinted rain light through window.',
       notes: '',
     },
   ];
@@ -171,6 +179,19 @@ export function importTemplate(tab: ImportTab, p: Project) {
     duration: 3,
     description: 'The boy hesitates before deleting the message.',
     status: 'Planned',
+    generatedPrompt: '',
+    customPrompt: '',
+    sourceContentHash: '',
+    shotIntent: {
+      panelNumber: '01A',
+      shotSize: 'close_up',
+      angle: 'eye_level',
+      movement: 'push_in',
+      purpose: 'reaction',
+      description: 'The boy hesitates before deleting the message.',
+      characterIds: [],
+      lens: '50mm',
+    },
   };
   const guide =
     ' Put each scene in scenes in screenplay order with a unique ref. heading starts INT., EXT. or INT./EXT. The app creates scene-heading blocks: do not repeat headings in blocks. Block types: action, character, parenthetical, dialogue, transition, shot, general. Character cues contain names. Do not put the screenplay in one string. Scenes append to existing scenes.';
@@ -209,7 +230,11 @@ export function importTemplate(tab: ImportTab, p: Project) {
         ...common,
         instructions:
           common.instructions +
-          ' Use sceneId from sceneReference below. Panels append to both storyboard and shot list. Import a screenplay first if there are no scenes. Upload images in the app after import.',
+          ' Use sceneId from sceneReference below. Panels append to both storyboard and shot list. Import a screenplay first if there are no scenes. Upload images in the app after import.' +
+          ' shotIntent is optional structured shot metadata; generatedPrompt is the compiled image-generation prompt; customPrompt overrides generatedPrompt; sourceContentHash tracks scene changes.' +
+          ' shotSize values: extreme_wide, wide, medium_wide, medium, medium_close, close_up, extreme_close_up, insert, over_shoulder, two_shot.' +
+          ' angle values: eye_level, high, low, top_down, dutch. movement values: static, pan, tilt, push_in, pull_out, tracking, handheld.' +
+          ' purpose values: establish, dialogue, reaction, action, insert, transition.',
         sceneReference: p.scenes.map((s, i) => ({
           sceneId: s.id,
           number: i + 1,
@@ -265,7 +290,7 @@ function scenesFrom(x: unknown): Scene[] {
     const heading = name(o.heading, path + '.heading');
     if (!/^(INT\.|EXT\.|INT\.\/EXT\.)\s+/i.test(heading))
       throw Error(path + '.heading must begin INT., EXT. or INT./EXT.');
-    const blocks = arr(o.blocks ?? [], path + '.blocks', 5000).map((v, j) => {
+    const blocks = arr(o.blocks ?? [], path + '.blocks', 5000).flatMap((v, j) => {
       const b = obj(v, path + '.blocks[' + j + ']');
       const type = choice(
         b.type,
@@ -273,11 +298,34 @@ function scenesFrom(x: unknown): Scene[] {
         elementTypes.filter((t) => t !== 'scene_heading'),
         'action',
       ) as Scene['blocks'][number]['type'];
-      return {
+      const raw = str(b.content, path + '.blocks[' + j + '].content');
+      if (type === 'transition' && raw.includes('\n')) {
+        const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        if (!lines.length) return [{ id: uid(), type: 'transition' as const, content: '' }];
+        return [
+          { id: uid(), type: 'transition' as const, content: lines[0] },
+          ...lines.slice(1).map((line) => ({ id: uid(), type: 'action' as const, content: line })),
+        ];
+      }
+      if (type === 'character' && raw.includes('\n')) {
+        const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        if (!lines.length) return [{ id: uid(), type: 'character' as const, content: '' }];
+        return [
+          { id: uid(), type: 'character' as const, content: lines[0].toUpperCase() },
+          ...lines.slice(1).map((line) => ({ id: uid(), type: 'dialogue' as const, content: line })),
+        ];
+      }
+      let content = raw;
+      if (type === 'character' || type === 'transition') {
+        content = raw.trim();
+      } else if (type === 'dialogue' || type === 'parenthetical') {
+        content = raw.trimStart();
+      }
+      return [{
         id: uid(),
         type,
-        content: str(b.content, path + '.blocks[' + j + '].content'),
-      };
+        content,
+      }];
     });
     return {
       id: uid(),
@@ -350,7 +398,7 @@ function entities(
         description: '',
         notes: '',
         ...existing,
-        ...fields(o, ['description', 'notes'], kind + '[' + i + ']'),
+        ...fields(o, ['description', 'visualDescription', 'notes'], kind + '[' + i + ']'),
         generated: false,
       };
       result = {
@@ -363,6 +411,52 @@ function entities(
   }
   return result;
 }
+const shotSizes: readonly ShotSize[] = [
+  'extreme_wide', 'wide', 'medium_wide', 'medium', 'medium_close',
+  'close_up', 'extreme_close_up', 'insert', 'over_shoulder', 'two_shot',
+] as const;
+const cameraAngles: readonly CameraAngle[] = [
+  'eye_level', 'high', 'low', 'top_down', 'dutch',
+] as const;
+const cameraMovements: readonly CameraMovement[] = [
+  'static', 'pan', 'tilt', 'push_in', 'pull_out', 'tracking', 'handheld',
+] as const;
+const shotPurposes: readonly ShotPurpose[] = [
+  'establish', 'dialogue', 'reaction', 'action', 'insert', 'transition',
+] as const;
+
+function parseShotIntent(
+  o: Obj,
+  path: string,
+  sceneId: string,
+): StoryboardShotIntent | undefined {
+  if (o.shotIntent === undefined) return undefined;
+  const si = obj(o.shotIntent, path + '.shotIntent');
+  return {
+    id: uid(),
+    sceneId,
+    panelNumber: si.panelNumber === undefined ? '' : str(si.panelNumber, path + '.shotIntent.panelNumber', 20),
+    shotSize: choice(si.shotSize, path + '.shotIntent.shotSize', shotSizes, 'medium') as ShotSize,
+    angle: choice(si.angle, path + '.shotIntent.angle', cameraAngles, 'eye_level') as CameraAngle,
+    movement: choice(si.movement, path + '.shotIntent.movement', cameraMovements, 'static') as CameraMovement,
+    purpose: choice(si.purpose, path + '.shotIntent.purpose', shotPurposes, 'action') as ShotPurpose,
+    description: si.description === undefined ? '' : str(si.description, path + '.shotIntent.description'),
+    characterIds: si.characterIds === undefined
+      ? []
+      : arr(si.characterIds, path + '.shotIntent.characterIds', 50).map(
+          (v, j) => str(v, path + '.shotIntent.characterIds[' + j + ']', 200),
+        ),
+    locationId: si.locationId === undefined ? undefined : str(si.locationId, path + '.shotIntent.locationId', 200),
+    propIds: si.propIds === undefined
+      ? undefined
+      : arr(si.propIds, path + '.shotIntent.propIds', 50).map(
+          (v, j) => str(v, path + '.shotIntent.propIds[' + j + ']', 200),
+        ),
+    duration: si.duration === undefined ? undefined : num(si.duration, path + '.shotIntent.duration'),
+    lens: si.lens === undefined ? undefined : str(si.lens, path + '.shotIntent.lens', 50),
+  };
+}
+
 function panelsFrom(
   p: Project,
   x: unknown,
@@ -411,6 +505,19 @@ function panelsFrom(
         'Planned',
       ),
       image,
+      shotIntent: parseShotIntent(o, path, sceneId),
+      generatedPrompt:
+        o.generatedPrompt === undefined
+          ? undefined
+          : str(o.generatedPrompt, path + '.generatedPrompt'),
+      customPrompt:
+        o.customPrompt === undefined
+          ? undefined
+          : str(o.customPrompt, path + '.customPrompt'),
+      sourceContentHash:
+        o.sourceContentHash === undefined
+          ? undefined
+          : str(o.sourceContentHash, path + '.sourceContentHash'),
     };
   });
 }
@@ -527,7 +634,14 @@ function backupPackage(value: unknown, depth = 0): Obj {
     }),
     panels: arr(o.panels, 'backup.panels', 3000).map((v) => {
       const p = obj(v, 'panel');
-      return { ...p, sceneRef: p.sceneId };
+      return {
+        ...p,
+        sceneRef: p.sceneId,
+        shotIntent: p.shotIntent,
+        generatedPrompt: p.generatedPrompt,
+        customPrompt: p.customPrompt,
+        sourceContentHash: p.sourceContentHash,
+      };
     }),
   };
 }

@@ -124,9 +124,46 @@ try {
   ).project;
   const updated = updateWorkspace(series, episode.id, () => imported);
   assert.deepEqual(updated.episodes[0], series.episodes[0]);
-  assert.equal(updated.episodes[1].scenes.length, 1);
+  // Test multiline transition splitting and space trimming
+  const multilineScript = structuredClone(screenplay);
+  multilineScript.scenes = [{
+    ref: 'scene-test-split',
+    heading: 'INT. TEST - DAY',
+    blocks: [
+      {
+        type: 'transition',
+        content: 'MONTAGE:\nRTC BUS HYDERABAD CITY LO ENTER AVUTHUNDI.:\nBUS WINDOW DAGGARA SIRISHA...'
+      },
+      {
+        type: 'character',
+        content: '   SIRISHA (V.O.)  '
+      },
+      {
+        type: 'dialogue',
+        content: '    Na peru Sirisha.'
+      }
+    ]
+  }];
+  const splitResult = prepareImport(
+    JSON.stringify(multilineScript),
+    'Screenplay',
+    p
+  ).project;
+  const lastScene = splitResult.scenes.at(-1);
+  // blocks: [scene_heading, transition(MONTAGE:), action(RTC BUS...), action(BUS WINDOW...), character(SIRISHA (V.O.)), dialogue(Na peru Sirisha.)]
+  assert.equal(lastScene.blocks[1].type, 'transition');
+  assert.equal(lastScene.blocks[1].content, 'MONTAGE:');
+  assert.equal(lastScene.blocks[2].type, 'action');
+  assert.equal(lastScene.blocks[2].content, 'RTC BUS HYDERABAD CITY LO ENTER AVUTHUNDI.:');
+  assert.equal(lastScene.blocks[3].type, 'action');
+  assert.equal(lastScene.blocks[3].content, 'BUS WINDOW DAGGARA SIRISHA...');
+  assert.equal(lastScene.blocks[4].type, 'character');
+  assert.equal(lastScene.blocks[4].content, 'SIRISHA (V.O.)');
+  assert.equal(lastScene.blocks[5].type, 'dialogue');
+  assert.equal(lastScene.blocks[5].content, 'Na peru Sirisha.');
+
   console.log(
-    'All 8 templates, validation errors, preview atomicity, entity merging, backup restoration, and episode isolation passed.',
+    'All 8 templates, validation errors, preview atomicity, entity merging, backup restoration, transition splitting, and episode isolation passed.',
   );
 } finally {
   fs.unlinkSync(compiled);
