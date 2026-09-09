@@ -319,11 +319,7 @@ export function seeds(): Project[] {
     'Quiet, thoughtful, and caught between wanting to reach out and fearing the answer.';
   ready.characters[0].role = 'Lead';
   ready.characters[1].role = 'Lead';
-  return [
-    ready,
-    blankProject('DEPRIVED', 'Short Film'),
-    blankProject('OH ISHA', 'Series'),
-  ];
+  return [ready];
 }
 export function screenplayText(p: Project) {
   return (

@@ -34,11 +34,11 @@ try {
   const projects = seeds();
   await saveProjects(projects);
   const first = await store.claimGuest('account-a');
-  assert.equal(first.length, 3);
+  assert.equal(first.length, 1);
   const checkpoint = await store.readWorkspace('account-a');
   assert.equal(
     checkpoint.projects.length,
-    3,
+    1,
     'migration persists projects atomically with the claim',
   );
   assert.equal((await store.claimGuest('account-b')).length, 0);
@@ -54,7 +54,7 @@ try {
     bases: { [projects[0].id]: base },
   });
   await store.saveWorkspace('account-b', { projects: [], bases: {} });
-  assert.equal((await store.readWorkspace('account-a')).projects.length, 3);
+  assert.equal((await store.readWorkspace('account-a')).projects.length, 1);
   assert.deepEqual(
     (await store.readWorkspace('account-a')).bases[projects[0].id],
     base,
@@ -87,7 +87,7 @@ try {
     2,
     'old local backups migrate',
   );
-  assert.equal(cloud.mergeGuest(projects, [projects[0]]).length, 3);
+  assert.equal(cloud.mergeGuest(projects, [projects[0]]).length, 1);
   const copy = cloud.conflictCopy(projects[0]);
   assert.notEqual(copy.id, projects[0].id);
   copy.scenes[0].summary = 'Edited copy';
