@@ -112,6 +112,13 @@ import { useBackups } from './use-backups';
 import { readBackups, backupIntervals } from '@/lib/backups';
 import ImportWorkspace from './import-workspace';
 import { importTabs, type ImportTab } from '@/lib/imports';
+import { useDeviceMode } from '@/hooks/use-device-mode';
+import { MobileProjectHeader } from '@/components/mobile/mobile-project-header';
+import { MobileBottomNav } from '@/components/mobile/mobile-bottom-nav';
+import { MobileSceneCards } from '@/components/mobile/mobile-scene-cards';
+import { MobileStoryboard } from '@/components/mobile/mobile-storyboard';
+import { MobileEntities } from '@/components/mobile/mobile-entities';
+import { MobileShotList } from '@/components/mobile/mobile-shot-list';
 const nav = [
   ['Overview', LayoutDashboard],
   ['Story', BookOpen],
@@ -236,6 +243,7 @@ export default function Home() {
     signOut,
     retry: retrySync,
   } = useWorkspace();
+  const { isMobile } = useDeviceMode();
   const [projectId, setProjectId] = useState(''),
     [view, setView] = useState('Scene cards'),
     [dashboard, setDashboard] = useState(false),
@@ -271,6 +279,7 @@ export default function Home() {
       rootId: string;
       workspaceId: string;
     } | null>(null);
+  const [scriptTypingFocus, setScriptTypingFocus] = useState(false);
   const rootProject = projects.find((p) => p.id === projectId) ?? projects[0];
   const isSeries = rootProject?.kind === 'series';
   const activeEpisode =
@@ -512,6 +521,48 @@ export default function Home() {
       setPanelEdit((p) => (p ? { ...p, image: String(reader.result) } : p));
     reader.readAsDataURL(file);
   }
+
+  const uploadImageForPanel = (file: File, panelId: string) => {
+    if (!file || !file.type.startsWith('image/')) {
+      setNotice('Choose an image file.');
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      setNotice('Choose an image under 8 MB for this local demo.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result);
+      update((p) => ({
+        ...p,
+        panels: p.panels.map((panel) =>
+          panel.id === panelId ? { ...panel, image: dataUrl } : panel,
+        ),
+      }));
+      setNotice('Storyboard frame updated.');
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const removeImageForPanel = (panelId: string) => {
+    update((p) => ({
+      ...p,
+      panels: p.panels.map((panel) =>
+        panel.id === panelId ? { ...panel, image: undefined } : panel,
+      ),
+    }));
+    setNotice('Image removed from storyboard panel.');
+  };
+
+  const updatePanel = (panel: Panel) => {
+    update((p) => ({
+      ...p,
+      panels: p.panels.map((x) => (x.id === panel.id ? panel : x)),
+    }));
+    setNotice('Panel updated.');
+  };
+
   async function exportFile(kind: string) {
     const exportTitle = isSeries
       ? rootProject.title +
@@ -661,9 +712,371 @@ export default function Home() {
         ? 'Episode story'
         : view;
   return (
-    <SidebarProvider
-      style={{ '--sidebar-width': '300px' } as React.CSSProperties}
-    >
+    <>
+      {isMobile ? (
+        <div className={`mobile-app-shell${scriptTypingFocus ? ' typing-distraction-free' : ''}`}>
+          {dashboard ? (
+            <div className="mobile-dashboard p-4">
+              <header className="flex items-center justify-between pb-3 border-b border-border/50 mb-4">
+                <div className="flex items-center gap-2">
+                  <Clapperboard size={22} className="text-primary" />
+                  <h1 className="text-base font-bold">Draft-it PRO</h1>
+                </div>
+                <Button size="sm" onClick={() => setCreate(true)} className="h-8 gap-1 text-xs">
+                  <Plus size={14} /> New Project
+                </Button>
+              </header>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-xs text-muted-foreground font-bold uppercase tracking-wider">
+                  <span>Your Projects ({projects.length})</span>
+                </div>
+                {projects.map((p) => (
+                  <div
+                    key={p.id}
+                    className="mobile-project-card p-3.5 rounded-xl border border-border bg-card cursor-pointer shadow-xs"
+                    onClick={() => {
+                      setProjectId(p.id);
+                      setSceneId('');
+                      setView(p.kind === 'series' ? 'Series overview' : 'Scene cards');
+                      setEpisodeId(p.episodes?.[0]?.id ?? '');
+                      setDashboard(false);
+                    }}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="min-w-0 flex-1">
+                        <b className="text-sm font-bold block truncate">{p.title}</b>
+                        <small className="text-xs text-muted-foreground block mt-0.5">
+                          {p.kind === 'series'
+                            ? `Web Series · ${p.episodes?.length ?? 0} eps`
+                            : `${p.format} · ${p.scenes.length} scenes`}
+                          {' · '}
+                          {p.draft}
+                        </small>
+                      </div>
+                      <ChevronRight size={18} className="text-muted-foreground shrink-0 mt-1" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <>
+              {!scriptTypingFocus && (
+              <MobileProjectHeader
+                project={project}
+                rootProject={rootProject}
+                isSeries={isSeries}
+                currentView={view}
+                saved={saved}
+                cloudStatus={cloudStatus}
+                user={user}
+                onBackToProjects={() => setDashboard(true)}
+                onSelectView={setView}
+                onOpenEpisodeDialog={() => setEpisodeDialog(true)}
+                onDeleteProject={() => {
+                  if (window.confirm(`Delete project "${project.title}"?`)) {
+                    deleteProject(project.id);
+                    setDashboard(true);
+                  }
+                }}
+                onRetrySync={retrySync}
+              />
+              )}
+
+              <div className="mobile-workspace-body">
+                {view === 'Scene cards' && (
+                  <MobileSceneCards
+                    project={project}
+                    onOpenScene={(id) => openScene(id)}
+                    onWriteScene={(id) => {
+                      setSceneId(id);
+                      setView('Screenplay');
+                    }}
+                    onAddScene={(act) => addScene(act)}
+                    onAddAct={() => setAddAct(true)}
+                    onShiftScene={(id, dir) => shiftScene(id, dir)}
+                    onDeleteScene={(id, heading) => askDelete('scene', id, heading)}
+                    onDeleteAct={(act) => askDelete('act', act, act)}
+                  />
+                )}
+
+                {view === 'Screenplay' &&
+                  (scene ? (
+                    <ScriptEditor
+                      key={scene.id}
+                      scene={scene}
+                      allScenes={project.scenes}
+                      acts={project.acts}
+                      locations={project.locations.map((l) => l.name)}
+                      onChange={(blocks) => patchScene(scene.id, { blocks })}
+                      onSelectScene={(id) => setSceneId(id)}
+                      onAddScene={() => addScene(scene.act)}
+                      onOpenSceneDetails={() => setInspect(true)}
+                      isTypingFocus={scriptTypingFocus}
+                      onTypingFocusChange={setScriptTypingFocus}
+                    />
+                  ) : (
+                    <div className="p-8 text-center">
+                      <FileText size={32} className="mx-auto text-muted-foreground mb-2" />
+                      <b className="text-sm block">No scenes to write yet</b>
+                      <p className="text-xs text-muted-foreground mt-1 mb-4">
+                        Create your first scene to start writing the script.
+                      </p>
+                      <Button onClick={() => addScene()} size="sm">
+                        <Plus size={14} className="mr-1" /> Add Scene
+                      </Button>
+                    </div>
+                  ))}
+
+                {view === 'Storyboard' && (
+                  <MobileStoryboard
+                    project={project}
+                    scene={scene}
+                    onSelectScene={(id) => setSceneId(id)}
+                    onAddScene={() => addScene()}
+                    onAddPanel={addPanel}
+                    onEditPanel={(p) => setPanelEdit({ ...p })}
+                    onUploadImage={uploadImageForPanel}
+                    onRemoveImage={removeImageForPanel}
+                    onUpdatePanel={updatePanel}
+                    onAutoPlanScene={(s) => {
+                      const count = project.panels.filter((p) => p.sceneId === s.id).length;
+                      setReplacePanels(count > 0);
+                      setAutoPlanScene(s);
+                    }}
+                  />
+                )}
+
+                {view === 'Story' && (
+                  <div className="p-4 space-y-3">
+                    <div className="flex items-center justify-between pb-2 border-b border-border/50">
+                      <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                        STORY FOUNDATION
+                      </span>
+                      <button
+                        className="text-xs text-destructive flex items-center gap-1 cursor-pointer"
+                        onClick={() => askDelete('story', '', project.title)}
+                      >
+                        <Trash2 size={12} /> Clear
+                      </button>
+                    </div>
+                    <Field
+                      label="Story Title"
+                      value={project.title}
+                      onChange={(title) => update((p) => ({ ...p, title }))}
+                    />
+                    <Field
+                      label="Logline"
+                      value={project.logline}
+                      onChange={(logline) => update((p) => ({ ...p, logline }))}
+                      multiline
+                    />
+                    <div className="grid grid-cols-2 gap-2">
+                      <Field
+                        label="Genre"
+                        value={project.genre}
+                        onChange={(genre) => update((p) => ({ ...p, genre }))}
+                      />
+                      <Field
+                        label="Runtime (sec)"
+                        type="number"
+                        value={project.targetRuntime}
+                        onChange={(v) => update((p) => ({ ...p, targetRuntime: Number(v) }))}
+                      />
+                    </div>
+                    <Field
+                      label="Premise"
+                      value={project.premise}
+                      onChange={(premise) => update((p) => ({ ...p, premise }))}
+                      multiline
+                    />
+                    <Field
+                      label="Theme"
+                      value={project.theme}
+                      onChange={(theme) => update((p) => ({ ...p, theme }))}
+                      multiline
+                    />
+                    <Field
+                      label="Synopsis"
+                      value={project.synopsis}
+                      onChange={(synopsis) => update((p) => ({ ...p, synopsis }))}
+                      multiline
+                    />
+                    <Field
+                      label="Writer's Notes"
+                      value={project.notes}
+                      onChange={(notes) => update((p) => ({ ...p, notes }))}
+                      multiline
+                    />
+                  </div>
+                )}
+
+                {view === 'Characters' && (
+                  <MobileEntities
+                    type="Characters"
+                    project={project}
+                    onUpdateProject={update}
+                    onSelectScene={(id) => {
+                      setSceneId(id);
+                      setView('Screenplay');
+                    }}
+                    onDeleteEntity={(kind, id, name) => askDelete(kind, id, name)}
+                  />
+                )}
+
+                {view === 'Locations' && (
+                  <MobileEntities
+                    type="Locations"
+                    project={project}
+                    onUpdateProject={update}
+                    onSelectScene={(id) => {
+                      setSceneId(id);
+                      setView('Screenplay');
+                    }}
+                    onDeleteEntity={(kind, id, name) => askDelete(kind, id, name)}
+                  />
+                )}
+
+                {view === 'Shot list' && (
+                  <MobileShotList
+                    project={project}
+                    onEditPanel={(p) => setPanelEdit({ ...p })}
+                    onExportCsv={() => exportFile('Shot list')}
+                    onSelectScene={(id) => {
+                      setSceneId(id);
+                      setView('Storyboard');
+                    }}
+                  />
+                )}
+
+                {view === 'Export' && (
+                  <div className="p-4 space-y-3">
+                    <div className="pb-2 border-b border-border/50">
+                      <h2 className="text-base font-bold">Export & Backups</h2>
+                      <p className="text-xs text-muted-foreground">
+                        Download your script or full project package
+                      </p>
+                    </div>
+                    <div className="space-y-2.5">
+                      {[
+                        { name: 'Screenplay PDF', kind: 'PDF', icon: FileText, desc: 'US Letter · Courier 12' },
+                        { name: 'Fountain Script', kind: 'Fountain', icon: FileText, desc: 'Plain-text screenplay standard' },
+                        { name: 'Shot List CSV', kind: 'Shot list', icon: ListVideo, desc: 'Spreadsheet of storyboard shots' },
+                        { name: 'Project Backup', kind: 'Backup', icon: Save, desc: 'Full JSON backup with scenes & images' },
+                      ].map(({ name, kind, icon: Icon, desc }) => (
+                        <div
+                          key={kind}
+                          className="p-3 rounded-xl border border-border bg-card flex items-center justify-between"
+                        >
+                          <div className="flex items-center gap-3">
+                            <Icon size={20} className="text-muted-foreground" />
+                            <div>
+                              <b className="text-xs font-bold block">{name}</b>
+                              <small className="text-[11px] text-muted-foreground">{desc}</small>
+                            </div>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-8 text-xs gap-1"
+                            disabled={exporting}
+                            onClick={() => exportFile(kind)}
+                          >
+                            <Download size={12} />
+                            {exporting ? '...' : 'Download'}
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {view === 'Overview' && (
+                  <div className="p-4 space-y-4">
+                    <div className="p-3 rounded-xl border border-border bg-card">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                        {project.format} · {project.genre || 'Genre not set'}
+                      </span>
+                      <h2 className="text-base font-bold mt-1">{project.title}</h2>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {project.logline || 'No logline added yet.'}
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <div className="p-3 rounded-xl border border-border bg-card text-center">
+                        <b className="text-lg font-bold font-mono block">{project.scenes.length}</b>
+                        <span className="text-xs text-muted-foreground">Scenes</span>
+                      </div>
+                      <div className="p-3 rounded-xl border border-border bg-card text-center">
+                        <b className="text-lg font-bold font-mono block">{time(total)}</b>
+                        <span className="text-xs text-muted-foreground">Est. Runtime</span>
+                      </div>
+                      <div className="p-3 rounded-xl border border-border bg-card text-center">
+                        <b className="text-lg font-bold font-mono block">{project.characters.length}</b>
+                        <span className="text-xs text-muted-foreground">Characters</span>
+                      </div>
+                      <div className="p-3 rounded-xl border border-border bg-card text-center">
+                        <b className="text-lg font-bold font-mono block">{project.panels.length}</b>
+                        <span className="text-xs text-muted-foreground">Storyboards</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {view === 'Series overview' && isSeries && (
+                  <div className="p-4 space-y-3">
+                    <h2 className="text-base font-bold">Episodes in Series</h2>
+                    <div className="space-y-2">
+                      {rootProject.episodes?.map((e) => (
+                        <div
+                          key={e.id}
+                          className="p-3 rounded-xl border border-border bg-card flex items-center justify-between cursor-pointer"
+                          onClick={() => selectEpisode(e.id)}
+                        >
+                          <div>
+                            <span className="text-xs font-mono font-bold text-muted-foreground block">
+                              {episodeLabel(e)}
+                            </span>
+                            <b className="text-sm font-bold block">{e.title}</b>
+                            <small className="text-xs text-muted-foreground">
+                              {e.scenes.length} scenes · {time(e.scenes.reduce((n, s) => n + s.duration, 0))}
+                            </small>
+                          </div>
+                          <ChevronRight size={18} className="text-muted-foreground" />
+                        </div>
+                      ))}
+                    </div>
+                    <Button
+                      className="w-full mt-2"
+                      size="sm"
+                      onClick={() => setEpisodeDialog(true)}
+                    >
+                      <Plus size={14} className="mr-1" /> Add Episode
+                    </Button>
+                  </div>
+                )}
+              </div>
+
+              {!scriptTypingFocus && (
+              <MobileBottomNav
+                currentView={view}
+                onSelectView={setView}
+                project={project}
+                cloudStatus={cloudStatus}
+                saved={saved}
+                user={user}
+                onOpenDashboard={() => setDashboard(true)}
+              />
+              )}
+            </>
+          )}
+        </div>
+      ) : (
+        <SidebarProvider
+          style={{ '--sidebar-width': '300px' } as React.CSSProperties}
+        >
       <Sidebar>
         <SidebarHeader>
           <button className="brand" onClick={() => setDashboard(true)}>
@@ -2033,7 +2446,9 @@ export default function Home() {
           )}
         </section>
       </main>
-      <Dialog open={create} onOpenChange={setCreate}>
+    </SidebarProvider>
+  )}
+  <Dialog open={create} onOpenChange={setCreate}>
         <DialogContent>
           <DialogTitle>Start a new story</DialogTitle>
           <DialogDescription>
@@ -3122,7 +3537,7 @@ export default function Home() {
           </button>
         </div>
       )}
-    </SidebarProvider>
+    </>
   );
 }
 function Empty({

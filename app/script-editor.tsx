@@ -200,17 +200,35 @@ const ScriptFormat = Extension.create({
   },
 });
 
+import { useDeviceMode } from '@/hooks/use-device-mode';
+import { MobileScriptEditor } from '@/components/mobile/mobile-script-editor';
+
 export default function ScriptEditor({
   scene,
   onChange,
   locations,
+  allScenes = [],
+  acts = [],
+  onSelectScene,
+  onAddScene,
+  onOpenSceneDetails,
+  isTypingFocus,
+  onTypingFocusChange,
 }: {
   scene: Scene;
   onChange: (blocks: Block[]) => void;
   locations: string[];
+  allScenes?: Scene[];
+  acts?: string[];
+  onSelectScene?: (sceneId: string) => void;
+  onAddScene?: () => void;
+  onOpenSceneDetails?: () => void;
+  isTypingFocus?: boolean;
+  onTypingFocusChange?: (isTyping: boolean) => void;
 }) {
   const callback = useRef(onChange);
   callback.current = onChange;
+  const { isMobile } = useDeviceMode();
   const [active, setActive] = useState('action');
   const [slash, setSlash] = useState(false);
   const [zoom, setZoom] = useState<number>(1);
@@ -317,6 +335,25 @@ export default function ScriptEditor({
         .run();
     }
     setActive(type);
+  }
+
+  if (isMobile) {
+    return (
+      <MobileScriptEditor
+        editor={editor}
+        scene={scene}
+        allScenes={allScenes.length > 0 ? allScenes : [scene]}
+        acts={acts.length > 0 ? acts : [scene.act]}
+        activeType={active}
+        onFormat={format}
+        onSelectScene={onSelectScene ?? (() => {})}
+        onAddScene={onAddScene}
+        onOpenSceneDetails={onOpenSceneDetails}
+        locations={locations}
+        isTypingFocus={isTypingFocus}
+        onTypingFocusChange={onTypingFocusChange}
+      />
+    );
   }
 
   return (
