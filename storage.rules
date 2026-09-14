@@ -8,6 +8,12 @@ service firebase.storage {
         && request.resource.contentType == 'application/json';
       allow delete: if request.auth != null && request.auth.uid == userId;
     }
+    match /users/{userId}/projects/{projectId}/files/{fileName} {
+      allow read, delete: if request.auth != null && request.auth.uid == userId;
+      allow write: if request.auth != null && request.auth.uid == userId
+        && request.resource != null && request.resource.size <= 25 * 1024 * 1024
+        && request.resource.contentType.matches('(image/(jpeg|png|webp|heic|heif)|video/(mp4|quicktime|webm)|audio/(mpeg|wav|mp4|ogg)|application/pdf|text/plain)');
+    }
     match /users/{userId}/projects/{projectId}/images/{fileName} {
       allow read: if request.auth != null && request.auth.uid == userId;
       allow write: if request.auth != null && request.auth.uid == userId

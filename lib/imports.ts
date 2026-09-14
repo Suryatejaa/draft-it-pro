@@ -1,7 +1,9 @@
+import { copyProjectSnapshot, migrateProjectSnapshot, validateProductionSnapshot, projectFileCopies, type FileCopy } from './production.ts';
 import {
   blankProject,
   createSeries,
   reconcile,
+  parseSceneHeading,
   uid,
   elementTypes,
   type Project,
@@ -288,8 +290,8 @@ function scenesFrom(x: unknown): Scene[] {
           '.colour must be a six-digit hex colour, such as #6689bd, or an empty string.',
       );
     const heading = name(o.heading, path + '.heading');
-    if (!/^(INT\.|EXT\.|INT\.\/EXT\.)\s+/i.test(heading))
-      throw Error(path + '.heading must begin INT., EXT. or INT./EXT.');
+    if (!parseSceneHeading(heading))
+      throw Error(path + '.heading must be a valid INT/EXT scene location, not a title card or character cue.');
     const blocks = arr(o.blocks ?? [], path + '.blocks', 5000).flatMap((v, j) => {
       const b = obj(v, path + '.blocks[' + j + ']');
       const type = choice(
@@ -646,6 +648,7 @@ function backupPackage(value: unknown, depth = 0): Obj {
   };
 }
 export type ImportPlan = {
+  fileCopies?: FileCopy[];
   project: Project;
   newProject: boolean;
   summary: string;
@@ -666,9 +669,21 @@ export function prepareImport(
   }
   const o = obj(raw, 'File');
   if (tab === 'Export' && o.schema === undefined) {
-    const restored = packageProject(backupPackage(o));
+    // The legacy package importer regenerates scene IDs and strips unknown fields.
+    // Full snapshots must retain the entire connected graph, including block coverage IDs.
+    let restored: Project;
+    if (o.schemaVersion !== undefined) {
+      backupPackage(o); // Validate existing screenplay package fields without discarding them.
+      const validate = (raw: Obj) => {
+        validateProductionSnapshot(raw as unknown as Project);
+        for (const e of (raw.episodes ?? []) as Obj[]) validate(e);
+      };
+      validate(o);
+      restored = migrateProjectSnapshot(copyProjectSnapshot(o as unknown as Project));
+    } else restored = migrateProjectSnapshot(packageProject(backupPackage(o)));
     return {
       project: restored,
+      fileCopies: o.schemaVersion !== undefined ? projectFileCopies(o as unknown as Project, restored) : [],
       newProject: true,
       summary: 'Restore as a new project. Existing projects will not change.',
       items: [restored.title, ...(restored.episodes ?? []).map((e) => e.title)],

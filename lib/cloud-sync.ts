@@ -1,3 +1,4 @@
+import { copyProjectSnapshot, validateProductionSnapshot } from './production.ts';
 import {
   collection,
   deleteDoc,
@@ -30,8 +31,7 @@ export async function digest(text: string) {
 }
 export function conflictCopy(project: Project): Project {
   return {
-    ...structuredClone(project),
-    id: uid(),
+    ...copyProjectSnapshot(project),
     title: project.title + ' (conflict copy)',
     updatedAt: new Date().toISOString(),
   };
@@ -175,6 +175,7 @@ export function validateCloudProject(
     )
   )
     throw Error('The cloud character/location data is invalid.');
+  validateProductionSnapshot(p);
   if (p.kind === 'series') {
     if (
       !Array.isArray(p.episodes) ||

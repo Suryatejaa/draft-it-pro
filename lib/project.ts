@@ -1,3 +1,4 @@
+import { migrateProjectSnapshot, type ProductionData, type CharacterProduction, type StoryLocationProduction, type SourceLink } from './production.ts';
 export const uid = () => crypto.randomUUID();
 export const elementTypes = [
   'scene_heading',
@@ -64,7 +65,7 @@ export interface StoryboardShotIntent {
   lens?: string;
 }
 
-export type Person = {
+export type Person = CharacterProduction & {
   generated?: boolean;
   id: string;
   name: string;
@@ -77,7 +78,7 @@ export type Person = {
   arc: string;
   notes: string;
 };
-export type Place = {
+export type Place = StoryLocationProduction & {
   generated?: boolean;
   id: string;
   name: string;
@@ -85,7 +86,9 @@ export type Place = {
   visualDescription?: string;
   notes: string;
 };
-export type Panel = {
+export type Panel = Partial<SourceLink> & {
+  shotId?: string;
+  shotRevision?: string;
   id: string;
   sceneId: string;
   size: string;
@@ -118,7 +121,10 @@ export type Scene = {
   characterIds: string[];
   blocks: Block[];
 };
-export type Project = {
+export type Project = Partial<ProductionData> & {
+  schemaVersion?: number;
+  sceneQuarantine?: { scene: Scene; reason: string }[];
+  memberships?: { userId: string; role: import("./production").ProjectRole }[];
   excludedCharacterNames?: string[];
   excludedLocationNames?: string[];
   backupSettings?: { enabled: boolean; intervalMinutes: number };
@@ -152,6 +158,7 @@ export function blankProject(title: string, format: string): Project {
   if (format === 'Series') return createSeries(title);
   return {
     kind: 'single',
+    schemaVersion: 2,
     id: uid(),
     title,
     format,
@@ -192,25 +199,36 @@ export function newScene(act = 'Act I'): Scene {
     ],
   };
 }
-export function locationName(heading: string) {
-  return heading
-    .replace(/^(INT\.?\s*\/\s*EXT\.?|INT\.?|EXT\.?)\s*/i, '')
-    .split(/\s[-–—]\s/)[0]
-    .trim()
-    .toUpperCase();
+export function normalizeCharacterName(cue: string): string {
+  const name = cue.normalize('NFKC').replace(/\s*\((?:V\.?O\.?|O\.?S\.?|O\.?C\.?|CONT['’]?D|CONTINUED)\)\s*/gi, ' ').replace(/\s+(?:V\.O\.|O\.S\.|CONT['’]?D)\s*$/gi, '').replace(/\s+/g, ' ').trim().toUpperCase();
+  if (!name || /^(?:INT|EXT|INT[./ -]*EXT)\b|^(?:TITLE CARD|SUPER|MONTAGE|END MONTAGE|FADE IN|FADE OUT|CUT TO|DISSOLVE TO|THE END|INTERCUT|CONTINUED)\b/.test(name) || /[:\n]/.test(name)) return '';
+  return name;
 }
+export function parseSceneHeading(heading: string) {
+  const match = heading.trim().match(/^(INT\.?\s*[/-]\s*EXT\.?|EXT\.?\s*[/-]\s*INT\.?|INT\.?|EXT\.?)(?:\s+)(.+)$/i);
+  if (!match) return undefined;
+  const parts = match[2].split(/\s+[-–—]\s+/);
+  const timeOfDay = parts.length > 1 && /^(DAY|NIGHT|DAWN|DUSK|MORNING|AFTERNOON|EVENING|LATER|CONTINUOUS|SAME TIME|MOMENTS LATER)$/i.test(parts.at(-1)!) ? parts.pop()! : '';
+  const name = parts.join(' - ').normalize('NFKC').replace(/\s+/g, ' ').trim().toUpperCase();
+  if (!name || /\b(TITLE CARD|MONTAGE|FADE OUT|CUT TO)\b/.test(name)) return undefined;
+  return { name, normalizedName: name.toLocaleLowerCase(), interiorExterior: /[/-]/.test(match[1]) ? 'INT/EXT' : match[1].replace('.', '').toUpperCase(), timeOfDay: timeOfDay.toUpperCase() };
+}
+export function locationName(heading: string) { return parseSceneHeading(heading)?.name ?? ''; }
 export function reconcile(project: Project): Project {
   const locations = [...project.locations],
     characters = [...project.characters];
-  const scenes = project.scenes.map((scene) => {
+  const invalid = project.scenes.filter(scene => !parseSceneHeading(scene.blocks.find(b=>b.type==='scene_heading')?.content ?? ''));
+  const quarantine = [...(project.sceneQuarantine ?? [])];
+  for (const scene of invalid) if (!quarantine.some(q=>q.scene.id===scene.id)) quarantine.push({ scene, reason: 'No valid semantic Scene Heading. A title card, cue or empty heading is not a production scene.' });
+  const scenes = project.scenes.filter(scene=>!invalid.includes(scene)).map((scene) => {
     const heading =
-      scene.blocks.find((b) => b.type === 'scene_heading')?.content ??
-      scene.heading;
+      scene.blocks.find((b) => b.type === 'scene_heading')?.content ?? '';
     const name = locationName(heading);
     let location = locations.find((l) => l.name.toUpperCase() === name);
     if (!location && name && !project.excludedLocationNames?.includes(name)) {
       location = {
         generated: true,
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
         id: uid(),
         name,
         description: '',
@@ -223,16 +241,15 @@ export function reconcile(project: Project): Project {
         scene.blocks
           .filter((b) => b.type === 'character' && b.content.trim())
           .map((b) => {
-            const name = b.content
-              .replace(/\s*\([^)]*\)/g, '')
-              .trim()
-              .toUpperCase();
-            let person = characters.find((p) => p.name.toUpperCase() === name);
+            const name = normalizeCharacterName(b.content);
+            if (!name) return undefined;
+            let person = characters.find((p) => normalizeCharacterName(p.name) === name);
             if (!person && project.excludedCharacterNames?.includes(name))
               return undefined;
             if (!person) {
               person = {
                 generated: true,
+                createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
                 id: uid(),
                 name,
                 role: '',
@@ -255,16 +272,19 @@ export function reconcile(project: Project): Project {
   return {
     ...project,
     scenes,
-    locations: locations.filter(
+    ...(quarantine.length || project.sceneQuarantine ? {sceneQuarantine:quarantine} : {}),
+    locations: locations.map(l => ({ ...l, projectId: project.id, normalizedName: l.name.trim().toLowerCase(), createdFromScreenplay: !!l.generated, sceneIds: scenes.filter(s => s.locationId === l.id).map(s => s.id), storyDayUsage: [...new Set(scenes.filter(s => s.locationId === l.id).map(s => s.storyDay))], interiorExterior: parseSceneHeading(scenes.find(s => s.locationId === l.id)?.heading ?? '')?.interiorExterior ?? l.interiorExterior })).filter(
       (l) =>
-        !l.generated ||
+        !l.generated || quarantine.some(q=>q.scene.locationId===l.id) ||
+        l.shootingLocationId || l.productionNotes || l.referenceImages?.length || project.breakdownItems?.some(i => i.linkedLocationId === l.id) ||
         l.description ||
         l.notes ||
         scenes.some((s) => s.locationId === l.id),
     ),
-    characters: characters.filter(
+    characters: characters.map(c => ({ ...c, projectId: project.id, normalizedName: normalizeCharacterName(c.name).toLowerCase(), createdFromScreenplay: !!c.generated, episodeIds: [project.id], sceneIds: scenes.filter(s => s.characterIds.includes(c.id)).map(s => s.id), storyDayAppearances: [...new Set(scenes.filter(s => s.characterIds.includes(c.id)).map(s => s.storyDay))] })).filter(
       (c) =>
-        !c.generated ||
+        !c.generated || quarantine.some(q=>q.scene.characterIds.includes(c.id)) ||
+        c.castMemberId || c.productionNotes || c.visualProfile || project.characterLooks?.some(l => l.characterId === c.id) || project.breakdownItems?.some(i => i.linkedCharacterId === c.id) ||
         c.role ||
         c.description ||
         c.goals ||
@@ -501,14 +521,15 @@ export function createSeries(title: string, count = 1): Project {
   };
 }
 export function normalizeProject(project: Project): Project {
+  project = migrateProjectSnapshot(reconcile(project));
   if (project.kind === 'series' && Array.isArray(project.episodes))
-    return project;
+    return { ...project, episodes: project.episodes.map(normalizeProject) };
   if (
     project.kind === 'series' ||
     project.format === 'Series' ||
     project.format === 'Web Series'
   ) {
-    const episode = {
+    let episode = {
       ...project,
       id: uid(),
       kind: 'single' as const,
@@ -518,8 +539,13 @@ export function normalizeProject(project: Project): Project {
       episodeNumber: 1,
       episodes: undefined,
     };
+    episode = { ...episode, characters: episode.characters.map(c => ({...c,projectId:episode.id,episodeIds:[episode.id]})), locations:episode.locations.map(l=>({...l,projectId:episode.id})) };
+    for (const key of ['castMembers','shootingLocations','breakdownItems','assets','shots','characterLooks','shootDays','callSheets','continuityRecords','crewMembers','documents','budget'] as const) {
+      (episode[key] as unknown) = episode[key]?.map(r => ({...r,projectId:episode.id,...(key==='breakdownItems'?{episodeId:episode.id}:{})}));
+    }
     return {
       ...project,
+      castMembers:[],shootingLocations:[],breakdownItems:[],assets:[],shots:[],characterLooks:[],shootDays:[],callSheets:[],continuityRecords:[],crewMembers:[],documents:[],budget:[],
       kind: 'series',
       format: 'Web Series',
       scenes: [],
@@ -537,13 +563,13 @@ export function updateWorkspace(
   fn: (p: Project) => Project,
 ): Project {
   const updatedAt = new Date().toISOString();
-  if (root.id === workspaceId) return { ...fn(root), updatedAt };
+  if (root.id === workspaceId) return migrateProjectSnapshot(reconcile({ ...fn(root), updatedAt }));
   if (!root.episodes?.some((e) => e.id === workspaceId)) return root;
   return {
     ...root,
     updatedAt,
     episodes: root.episodes.map((e) =>
-      e.id === workspaceId ? { ...fn(e), updatedAt } : e,
+      e.id === workspaceId ? migrateProjectSnapshot(reconcile({ ...fn(e), updatedAt })) : e,
     ),
   };
 }

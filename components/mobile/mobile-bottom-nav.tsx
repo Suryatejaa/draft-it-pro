@@ -23,6 +23,7 @@ import {
   SheetDescription,
 } from '@/components/ui/sheet';
 import type { Project } from '@/lib/project';
+import { workspaceGroups } from '@/components/production-workspace';
 
 export type MainMobileTab = 'Story' | 'Scene cards' | 'Screenplay' | 'Storyboard';
 
@@ -90,13 +91,7 @@ export function MobileBottomNav({
   const isMoreActive =
     !mainTabs.some((t) => t.id === currentView) && currentView !== 'Overview';
 
-  const moreItems: { id: string; label: string; desc: string; icon: LucideIcon }[] = [
-    { id: 'Overview',   label: 'Overview',        desc: 'Story stats & progress',                        icon: LayoutDashboard },
-    { id: 'Characters', label: 'Characters',       desc: `${project.characters?.length ?? 0} cast members`, icon: Users           },
-    { id: 'Locations',  label: 'Locations',        desc: `${project.locations?.length ?? 0} world places`,  icon: MapPin          },
-    { id: 'Shot list',  label: 'Shot List',        desc: `${project.panels?.length ?? 0} planned shots`,    icon: ListVideo       },
-    { id: 'Export',     label: 'Export & Backups', desc: 'PDF, Fountain, JSON',                          icon: Download        },
-  ];
+  const moreItems = workspaceGroups.flatMap(group => group.views.filter(id => !mainTabs.some(t=>t.id===id)).map(id => ({ id, label:id, desc:group.name, icon: id==='Characters'||id==='Cast & Crew'?Users:id==='Locations'?MapPin:id==='Shot list'?ListVideo:id==='Export'?Download:LayoutDashboard })));
 
   return (
     <>

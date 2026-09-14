@@ -33,7 +33,7 @@ export function deleteElement(p: Project, kind: DeleteKind, id = ''): Project {
     return {
       ...p,
       scenes: p.scenes.filter((s) => !ids.has(s.id)),
-      panels: p.panels.filter((s) => !ids.has(s.sceneId)),
+      panels: p.panels.filter((s) => s.shotId || !ids.has(s.sceneId)),
       acts: kind === 'act' ? p.acts.filter((a) => a !== id) : p.acts,
     };
   }

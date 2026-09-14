@@ -25,7 +25,7 @@ export default function ImportWorkspace({
   tab: ImportTab;
   project: Project;
   scope: string;
-  onImport: (plan: ImportPlan) => void;
+  onImport: (plan: ImportPlan) => void | Promise<void>;
 }) {
   const [open, setOpen] = useState(false),
     [source, setSource] = useState(''),
@@ -86,17 +86,19 @@ export default function ImportWorkspace({
       setError(e instanceof Error ? e.message : 'Could not read this import.');
     }
   }
-  function apply() {
+  async function apply() {
+    if (busy) return;
+    setBusy(true);
     try {
       const latest = prepareImport(source, tab, project);
-      onImport(latest);
+      await onImport(latest);
       setOpen(false);
       setSource('');
       setPlan(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Import failed.');
       setPlan(null);
-    }
+    } finally { setBusy(false); }
   }
   return (
     <>

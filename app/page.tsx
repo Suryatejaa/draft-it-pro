@@ -25,6 +25,8 @@ import {
   Palette,
   Trash2,
   Sparkles,
+  Wand2,
+  Settings,
   Copy,
   RefreshCw,
 } from 'lucide-react';
@@ -88,6 +90,7 @@ import {
   episodeLabel,
   newScene,
   reconcile,
+  parseSceneHeading,
   moveScene,
   screenplayText,
   fountainText,
@@ -119,17 +122,11 @@ import { MobileSceneCards } from '@/components/mobile/mobile-scene-cards';
 import { MobileStoryboard } from '@/components/mobile/mobile-storyboard';
 import { MobileEntities } from '@/components/mobile/mobile-entities';
 import { MobileShotList } from '@/components/mobile/mobile-shot-list';
-const nav = [
-  ['Overview', LayoutDashboard],
-  ['Story', BookOpen],
-  ['Scene cards', Columns3],
-  ['Screenplay', FileText],
-  ['Storyboard', Images],
-  ['Shot list', ListVideo],
-  ['Characters', Users],
-  ['Locations', MapPin],
-  ['Export', Download],
-] as const;
+import { copyProductionFiles } from '@/lib/production-files';
+import { ProductionWorkspace, productionViews, workspaceGroups } from '@/components/production-workspace';
+import { CoWriterDrawer } from '@/components/ai/co-writer-drawer';
+import { AIProviderSettings } from '@/components/ai/ai-provider-settings';
+const nav = workspaceGroups.flatMap(g => g.views.map(v => [v, v === 'Screenplay' ? FileText : v === 'Characters' || v === 'Cast & Crew' ? Users : v === 'Locations' ? MapPin : v === 'Storyboard' ? Images : v === 'Shot list' ? ListVideo : v === 'Export' ? Download : v === 'Story' ? BookOpen : v === 'Scene cards' ? Columns3 : LayoutDashboard] as const));
 const descriptions: Record<string, string> = {
   'Series overview':
     'Shape the series. Develop each episode in its own workspace.',
@@ -280,6 +277,8 @@ export default function Home() {
       workspaceId: string;
     } | null>(null);
   const [scriptTypingFocus, setScriptTypingFocus] = useState(false);
+  const [coWriterOpen, setCoWriterOpen] = useState(false);
+  const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
   const rootProject = projects.find((p) => p.id === projectId) ?? projects[0];
   const isSeries = rootProject?.kind === 'series';
   const activeEpisode =
@@ -322,6 +321,10 @@ export default function Home() {
     );
   }
   function patchScene(id: string, patch: Partial<Scene>) {
+    if (patch.blocks && !parseSceneHeading(patch.blocks.find(b=>b.type==='scene_heading')?.content ?? '')) {
+      setNotice('Scene heading needs a valid INT/EXT location. The unfinished heading has not been saved.');
+      return;
+    }
     update((p) =>
       reconcile({
         ...p,
@@ -587,26 +590,14 @@ export default function Home() {
       } else if (kind === 'Shot list') {
         const rows = [
           ['Shot', 'Scene', 'Size', 'Movement', 'Lens', 'Duration', 'Status'],
-          ...project.scenes.flatMap((s, i) =>
-            project.panels
-              .filter((p) => p.sceneId === s.id)
-              .map((p, j) => [
-                pad(i + 1) + String.fromCharCode(65 + j),
-                s.heading,
-                p.size,
-                p.movement,
-                p.lens,
-                String(p.duration),
-                p.status,
-              ]),
-          ),
+          ...(project.shots ?? []).slice().sort((a,b)=>a.order-b.order).map(shot => [shot.shotCode, project.scenes.find(s=>s.id===shot.sceneId)?.heading ?? 'Removed scene', shot.shotSize, shot.movement, shot.lens, String(shot.duration), shot.status]),
         ];
         download(
           new Blob(
             [
               rows
                 .map((r) =>
-                  r.map((v) => '"' + v.replaceAll('"', '""') + '"').join(','),
+                  r.map((v) => '"' + v.replace(/^[=+@-]/, "'$&").replaceAll('"', '""') + '"').join(','),
                 )
                 .join('\n'),
             ],
@@ -784,7 +775,12 @@ export default function Home() {
               />
               )}
 
+              <div className="flex items-center justify-end gap-2 px-3 py-1">
+                <Button size="sm" variant="outline" onClick={()=>setCoWriterOpen(true)}>Co-Drafter</Button>
+                <Button size="sm" variant="ghost" onClick={()=>setAiSettingsOpen(true)}>Co-Drafter AI</Button>
+              </div>
               <div className="mobile-workspace-body">
+                {productionViews.includes(view) && <ProductionWorkspace key={project.id + view} project={project} view={view} onUpdate={update} userId={user?.uid} rootId={rootProject.id} onScene={id => { setSceneId(id); setView("Screenplay"); }} />}
                 {view === 'Scene cards' && (
                   <MobileSceneCards
                     project={project}
@@ -829,7 +825,7 @@ export default function Home() {
                     </div>
                   ))}
 
-                {view === 'Storyboard' && (
+                {view === 'Legacy Storyboard' && (
                   <MobileStoryboard
                     project={project}
                     scene={scene}
@@ -912,7 +908,7 @@ export default function Home() {
                   </div>
                 )}
 
-                {view === 'Characters' && (
+                {view === 'Legacy Characters' && (
                   <MobileEntities
                     type="Characters"
                     project={project}
@@ -925,7 +921,7 @@ export default function Home() {
                   />
                 )}
 
-                {view === 'Locations' && (
+                {view === 'Legacy Locations' && (
                   <MobileEntities
                     type="Locations"
                     project={project}
@@ -938,7 +934,7 @@ export default function Home() {
                   />
                 )}
 
-                {view === 'Shot list' && (
+                {view === 'Legacy Shot list' && (
                   <MobileShotList
                     project={project}
                     onEditPanel={(p) => setPanelEdit({ ...p })}
@@ -1133,6 +1129,7 @@ export default function Home() {
             )}
             {(isSeries && !activeEpisode ? [] : nav).map(([n, I]) => (
               <SidebarMenuItem key={n}>
+                {workspaceGroups.some(g => g.views[0] === n) && <p className="prod-nav-heading">{workspaceGroups.find(g => g.views[0] === n)?.name}</p>}
                 <SidebarMenuButton
                   isActive={!dashboard && view === n}
                   onClick={() => {
@@ -1227,6 +1224,22 @@ export default function Home() {
             </span>
             <span className="draft">{project.draft}</span>
             <button
+              aria-label="Co-Drafter"
+              title="Open Co-Drafter"
+              onClick={() => setCoWriterOpen((o) => !o)}
+              style={{ display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 600, fontSize: '13px' }}
+            >
+              <Wand2 size={15} />
+              Co-Drafter
+            </button>
+            <button
+              aria-label="Co-Drafter AI Settings"
+              title="Co-Drafter AI Settings"
+              onClick={() => setAiSettingsOpen(true)}
+            >
+              <Settings size={16} />
+            </button>
+            <button
               aria-label="Open exports"
               onClick={() => {
                 setDashboard(false);
@@ -1279,7 +1292,11 @@ export default function Home() {
                           project.title
                         : project.title
                     }
-                    onImport={(plan) => {
+                    onImport={async (plan) => {
+                      if (plan.fileCopies?.length) {
+                        if (!user) throw Error("Sign in to the original account to restore attachments.");
+                        await copyProductionFiles(user.uid, plan.fileCopies);
+                      }
                       if (plan.newProject) {
                         setProjects((all) => [plan.project, ...all]);
                         setProjectId(plan.project.id);
@@ -1336,7 +1353,7 @@ export default function Home() {
                   <Download size={16} />
                   {exporting ? 'Preparing…' : 'Export PDF'}
                 </button>
-              ) : view === 'Storyboard' ? (
+              ) : view === 'Legacy Storyboard' ? (
                 <button
                   className="primary"
                   disabled={!scene}
@@ -1345,7 +1362,7 @@ export default function Home() {
                   <Plus size={16} />
                   Add panel
                 </button>
-              ) : view === 'Characters' || view === 'Locations' ? (
+              ) : view === 'Legacy Characters' || view === 'Legacy Locations' ? (
                 <button
                   className="primary"
                   onClick={() => {
@@ -1354,7 +1371,7 @@ export default function Home() {
                   }}
                 >
                   <Plus size={16} />
-                  Add {view === 'Characters' ? 'character' : 'location'}
+                  Add {view === 'Legacy Characters' ? 'character' : 'location'}
                 </button>
               ) : (
                 <button
@@ -1768,6 +1785,7 @@ export default function Home() {
                   </section>
                 </div>
               )}
+              {productionViews.includes(view) && <ProductionWorkspace key={project.id + view} project={project} view={view} onUpdate={update} userId={user?.uid} rootId={rootProject.id} onScene={id => { setSceneId(id); setView('Screenplay'); }} />}
               {view === 'Overview' && (
                 <div className="project-overview">
                   <section className="overview-summary">
@@ -2053,7 +2071,7 @@ export default function Home() {
                     label="Add first scene"
                   />
                 ))}
-              {view === 'Storyboard' && (
+              {view === 'Legacy Storyboard' && (
                 <>
                   <div className="scene-switcher">
                     {project.scenes.map((s, i) => (
@@ -2184,7 +2202,7 @@ export default function Home() {
                   )}
                 </>
               )}
-              {view === 'Shot list' && (
+              {view === 'Legacy Shot list' && (
                 <div className="table-panel">
                   <div className="table-caption">
                     <span>
@@ -2255,9 +2273,9 @@ export default function Home() {
                   )}
                 </div>
               )}
-              {(view === 'Characters' || view === 'Locations') && (
+              {(view === 'Legacy Characters' || view === 'Legacy Locations') && (
                 <div className="entities-grid">
-                  {(view === 'Characters'
+                  {(view === 'Legacy Characters'
                     ? project.characters
                     : project.locations
                   ).map((e, i) => (
@@ -2267,14 +2285,14 @@ export default function Home() {
                       onClick={() => setEntityId(e.id)}
                     >
                       <div className={'entity-avatar av' + i}>
-                        {view === 'Characters' ? (
+                        {view === 'Legacy Characters' ? (
                           e.name.slice(0, 1)
                         ) : (
                           <MapPin />
                         )}
                       </div>
                       <span className="section-kicker">
-                        {view === 'Characters'
+                        {view === 'Legacy Characters'
                           ? (e as Person).role || 'CHARACTER'
                           : 'LOCATION'}
                       </span>
@@ -2286,7 +2304,7 @@ export default function Home() {
                       <div className="entity-scenes">
                         {
                           project.scenes.filter((s) =>
-                            view === 'Characters'
+                            view === 'Legacy Characters'
                               ? s.characterIds.includes(e.id)
                               : s.locationId === e.id,
                           ).length
@@ -2296,15 +2314,15 @@ export default function Home() {
                     </button>
                   ))}
                   {!(
-                    view === 'Characters'
+                    view === 'Legacy Characters'
                       ? project.characters
                       : project.locations
                   ).length && (
                     <Empty
-                      icon={view === 'Characters' ? <Users /> : <MapPin />}
+                      icon={view === 'Legacy Characters' ? <Users /> : <MapPin />}
                       title={
                         'Build your ' +
-                        (view === 'Characters' ? 'cast.' : 'world.')
+                        (view === 'Legacy Characters' ? 'cast.' : 'world.')
                       }
                       text="Add an entry here, or let screenplay elements create it automatically."
                       label="Add entry"
@@ -2448,7 +2466,29 @@ export default function Home() {
       </main>
     </SidebarProvider>
   )}
+      {/* Draft AI Co-writer Panel */}
+      {!dashboard && (
+        <CoWriterDrawer
+          key={scope + ":" + project.id}
+          isOpen={coWriterOpen}
+          onClose={() => setCoWriterOpen(false)}
+          rootProject={rootProject}
+          activeWorkspace={isSeries && view !== 'Series overview' ? project : undefined}
+          activeView={view}
+          currentSceneId={sceneId || scene?.id}
+        />
+      )}
+  <Dialog open={aiSettingsOpen} onOpenChange={setAiSettingsOpen}>
+    <DialogContent style={{ maxWidth: 600, maxHeight: '90vh', overflowY: 'auto' }}>
+      <DialogTitle>Co-Drafter AI Settings</DialogTitle>
+      <DialogDescription>
+        Configure your own LLM API credentials for Co-Drafter. Keys stay on your device.
+      </DialogDescription>
+      <AIProviderSettings onClose={() => setAiSettingsOpen(false)} />
+    </DialogContent>
+  </Dialog>
   <Dialog open={create} onOpenChange={setCreate}>
+
         <DialogContent>
           <DialogTitle>Start a new story</DialogTitle>
           <DialogDescription>
@@ -2772,7 +2812,7 @@ export default function Home() {
       <Dialog open={newEntity} onOpenChange={setNewEntity}>
         <DialogContent>
           <DialogTitle>
-            Add {view === 'Characters' ? 'character' : 'location'}
+            Add {view === 'Legacy Characters' ? 'character' : 'location'}
           </DialogTitle>
           <DialogDescription>
             Connect this entry to scenes by using its name in the screenplay.
@@ -2784,14 +2824,14 @@ export default function Home() {
             onClick={() => {
               const name = title.trim().toUpperCase();
               const list =
-                view === 'Characters' ? project.characters : project.locations;
+                view === 'Legacy Characters' ? project.characters : project.locations;
               if (list.some((e) => e.name === name)) {
                 setNotice('That entry already exists.');
                 return;
               }
               const id = uid();
               update((p) =>
-                view === 'Characters'
+                view === 'Legacy Characters'
                   ? {
                       ...p,
                       characters: [

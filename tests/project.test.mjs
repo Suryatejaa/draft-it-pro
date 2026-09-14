@@ -84,7 +84,9 @@ assert.equal(seasonTwo.episodeNumber, 1);
 const legacy = { ...p, kind: undefined, format: 'Series' };
 const migrated = normalizeProject(legacy);
 assert.equal(migrated.episodes[0].scenes[0].id, p.scenes[0].id);
-assert.deepEqual(migrated.episodes[0].panels, p.panels);
+for (const panel of p.panels) { const migratedPanel=migrated.episodes[0].panels.find(x=>x.id===panel.id); for (const [key,value] of Object.entries(panel)) assert.deepEqual(migratedPanel[key],value,`Panel ${key} preserved`); }
+assert.equal(migrated.episodes[0].shots.length,p.panels.length);
+assert.ok(migrated.episodes[0].shots.every(s=>s.projectId===migrated.episodes[0].id));
 assert.deepEqual(normalizeProject(migrated), migrated);
 assert.equal(
   normalizeProject(blankProject('A film', 'Short Film')).kind,

@@ -34,6 +34,8 @@ import {
   saveWorkspace,
 } from '@/lib/workspace-store';
 import { normalizeProject, seeds, type Project } from '@/lib/project';
+import { projectFileCopies } from '@/lib/production';
+import { copyProductionFiles } from '@/lib/production-files';
 
 function deduplicateProjects(list: Project[]): Project[] {
   const seenIds = new Set<string>();
@@ -104,7 +106,7 @@ export function useWorkspace() {
   }, []);
   const setProjects: Dispatch<SetStateAction<Project[]>> = useCallback(
     (value) => {
-      const next = typeof value === 'function' ? value(local.current) : value;
+      const next = (typeof value === 'function' ? value(local.current) : value).map(normalizeProject);
       local.current = next;
       rawSetProjects(next);
       if (ready.current) {
@@ -232,7 +234,7 @@ export function useWorkspace() {
           const before = local.current.find((p) => p.id === id);
           const beforeText = before ? JSON.stringify(before) : '';
           const beforeHash = before ? await digest(beforeText) : '';
-          const remote = await downloadCloudProject(userId, id, manifest);
+          const remote = normalizeProject(await downloadCloudProject(userId, id, manifest));
           if (!valid()) return;
           const now = local.current.find((p) => p.id === id);
           if ((now ? JSON.stringify(now) : '') !== beforeText) {
@@ -244,6 +246,9 @@ export function useWorkspace() {
             beforeHash !== manifest.hash &&
             (!base || beforeHash !== base.hash);
           const copy = conflict ? conflictCopy(before) : undefined;
+          if (copy && before) await copyProductionFiles(userId, projectFileCopies(before, copy));
+          if (!valid()) return;
+          if ((local.current.find(p=>p.id===id) ? JSON.stringify(local.current.find(p=>p.id===id)) : "") !== beforeText) { pending = true; continue; }
           bases.current = {
             ...bases.current,
             [id]: { revision: manifest.revision, hash: manifest.hash },

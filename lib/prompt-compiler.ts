@@ -134,7 +134,8 @@ export function buildStoryboardPrompt(
   if (activeCharacters.length > 0) {
     subjectsDesc = activeCharacters
       .map((c) => {
-        const visual = c.visualDescription?.trim() || c.description?.trim();
+        const profile = c.visualProfile;
+        const visual = profile?.storyboardDescription?.trim() || (profile ? Object.values(profile).filter(Boolean).join(', ') : '') || c.visualDescription?.trim() || c.description?.trim();
         return visual ? `${c.name} (${visual})` : `${c.name}`;
       })
       .join('; ');

@@ -60,8 +60,80 @@ try {
     act.panels.every((panel) => act.scenes.some((s) => s.id === panel.sceneId)),
   );
   assert.equal(JSON.stringify(p), original);
+
+  // Test reference-safe production entity deletion
+  const { deleteProductionEntity } = await import('../lib/production.ts');
+
+  // 1. Delete Cast Member
+  const pCast = {
+    ...p,
+    castMembers: [{ id: 'cast-1', name: 'Actor 1', assignedCharacterIds: [p.characters[0].id] }],
+    characters: p.characters.map((c, i) => (i === 0 ? { ...c, castMemberId: 'cast-1', castingStatus: 'cast' } : c)),
+  };
+  const afterCastDelete = deleteProductionEntity(pCast, 'castMembers', 'cast-1');
+  assert.equal(afterCastDelete.castMembers.length, 0);
+  assert.equal(afterCastDelete.characters[0].castMemberId, '');
+  assert.equal(afterCastDelete.characters[0].castingStatus, 'uncast');
+  assert.equal(afterCastDelete.characters[0].id, p.characters[0].id); // Character preserved
+
+  // 2. Delete Shooting Location
+  const pLoc = {
+    ...p,
+    shootingLocations: [{ id: 'loc-1', name: 'Set 1' }],
+    locations: p.locations.map((l, i) => (i === 0 ? { ...l, shootingLocationId: 'loc-1' } : l)),
+    shootDays: [{ id: 'day-1', number: 1, shootingLocationIds: ['loc-1'], scheduledSceneIds: [p.scenes[0].id] }],
+  };
+  const afterLocDelete = deleteProductionEntity(pLoc, 'shootingLocations', 'loc-1');
+  assert.equal(afterLocDelete.shootingLocations.length, 0);
+  assert.equal(afterLocDelete.locations[0].shootingLocationId, '');
+  assert.equal(afterLocDelete.locations[0].id, p.locations[0].id); // Story location preserved
+  assert.deepEqual(afterLocDelete.shootDays[0].shootingLocationIds, []); // Removed from shoot day
+
+  // 3. Delete Asset
+  const pAsset = {
+    ...p,
+    assets: [{ id: 'asset-1', name: 'Prop Gun' }],
+    breakdownItems: [{ id: 'item-1', name: 'Gun', linkedAssetId: 'asset-1', sceneId: p.scenes[0].id }],
+  };
+  const afterAssetDelete = deleteProductionEntity(pAsset, 'assets', 'asset-1');
+  assert.equal(afterAssetDelete.assets.length, 0);
+  assert.equal(afterAssetDelete.breakdownItems[0].linkedAssetId, ''); // Link cleared
+  assert.equal(afterAssetDelete.breakdownItems[0].name, 'Gun'); // Breakdown item preserved
+
+  // 4. Delete Shoot Day
+  const pDay = {
+    ...p,
+    shootDays: [{ id: 'day-1', number: 1, scheduledSceneIds: [p.scenes[0].id] }],
+    callSheets: [{ id: 'sheet-1', shootDayId: 'day-1' }],
+  };
+  const afterDayDelete = deleteProductionEntity(pDay, 'shootDays', 'day-1');
+  assert.equal(afterDayDelete.shootDays.length, 0);
+  assert.equal(afterDayDelete.callSheets.length, 0);
+  assert.equal(afterDayDelete.scenes[0].id, p.scenes[0].id); // Scenes preserved intact in screenplay order
+
+  // 5. Delete Character Look
+  const pLook = {
+    ...p,
+    characterLooks: [{ id: 'look-1', name: 'Hero Jacket' }],
+    continuityRecords: [{ id: 'cont-1', characterLookId: 'look-1', sceneId: p.scenes[0].id }],
+  };
+  const afterLookDelete = deleteProductionEntity(pLook, 'characterLooks', 'look-1');
+  assert.equal(afterLookDelete.characterLooks.length, 0);
+  assert.equal(afterLookDelete.continuityRecords[0].characterLookId, '');
+
+  // 6. Delete Shot preserves panel
+  const pShot = {
+    ...p,
+    shots: [{ id: 'shot-1', shotCode: '1A', sceneId: p.scenes[0].id }],
+    panels: [{ id: 'panel-1', shotId: 'shot-1', sceneId: p.scenes[0].id }],
+  };
+  const afterShotDelete = deleteProductionEntity(pShot, 'shots', 'shot-1');
+  assert.equal(afterShotDelete.shots.length, 0);
+  assert.equal(afterShotDelete.panels[0].id, 'panel-1');
+  assert.equal(afterShotDelete.panels[0].shotId, undefined); // Panel unlinked & preserved
+
   console.log(
-    'Deletion checks passed: scene/shot cascades, entity suppression, script preservation, empty series, story clearing, and immutable updates.',
+    'Deletion checks passed: scene/shot cascades, entity suppression, script preservation, empty series, story clearing, production entity reference safety, and immutable updates.',
   );
 } finally {
   fs.unlinkSync(path);
