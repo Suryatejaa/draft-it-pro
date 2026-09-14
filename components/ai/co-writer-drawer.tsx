@@ -201,13 +201,13 @@ export function CoWriterDrawer({
 
   return (
     <div
-      className="fixed inset-y-0 right-0 z-50 w-full sm:w-[420px] lg:w-[460px] bg-background border-l border-border shadow-2xl flex flex-col h-[100dvh] min-h-0 transition-transform duration-200"
+      className="co-drafter-panel bg-background border-l border-border shadow-2xl flex flex-col min-h-0 transition-transform duration-200"
       style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}
       role="dialog"
       aria-label="Co-Drafter Panel"
     >
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border/50 bg-card/40 shrink-0">
+      <div className="co-drafter-header flex items-center justify-between px-4 py-3 border-b border-border/50 shrink-0">
         <div className="flex items-center gap-2">
           <div className="h-7 w-7 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
             <Sparkles className="h-4 w-4" />

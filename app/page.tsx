@@ -1198,8 +1198,8 @@ export default function Home() {
           </div>
         </SidebarFooter>
       </Sidebar>
-      <main className="main">
-        <header>
+      <main className={`main${coWriterOpen && view === 'Screenplay' ? ' co-drafter-open' : ''}`}>
+        <header className="app-header">
           <div>
             <SidebarTrigger />
             <button onClick={() => setDashboard(true)}>Projects</button>

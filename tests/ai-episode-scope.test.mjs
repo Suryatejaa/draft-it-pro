@@ -101,3 +101,19 @@ test('global Sirisha question sends all six scenes despite two character links a
   for(const [key,value] of Object.entries({scope:'episode',episodeId:'episode',activeActId:'Act I',episodeSceneCount:6,retrievedSceneCount:6,matchedCharacter:undefined,matchedSceneCount:6,canonicalSceneCount:6,linkedCharacterMatchCount:2,serializedSceneCount:6,completeEpisodeCoverage:true,complete:true}))assert.equal(diagnostics[key],value,key);
   assert.deepEqual(diagnostics.actsScanned,episode.acts);
 });
+
+test('six canonical scenes with only two character links still serialize six compact records to Sarvam',async t=>{
+  const sparse={...episode,scenes:episode.scenes.map((scene,i)=>({...scene,summary:i<2?scene.summary:'',characterIds:i<2?['sirisha']:[]}))};
+  const sparseRoot={...root,episodes:[sparse]};
+  const queries=initialReadOnlyQueries('List every scene in this episode where Sirisha appears and briefly explain what happens in each.',sparseRoot,sparse);
+  assert.deepEqual(queries.find(call=>call.name==='getScenes').arguments,{});
+  assert.equal(executeToolCall('getScenes',{characterId:'sirisha'},sparseRoot,sparse).length,2,'Reproduces the former pre-filter reduction');
+  let payload;
+  t.mock.method(globalThis,'fetch',async(_url,init)=>{payload=JSON.parse(init.body);return new Response('data: {"choices":[{"delta":{"content":"Done"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');});
+  const settings={sarvam:{apiKey:'test-key',model:'sarvam-105b'},openaiCompatible:{apiKey:'',baseUrl:'',model:''},activeProviderId:'auto',routing:{primaryProviderId:'sarvam',primaryModel:'sarvam-105b',fallbacks:[]}};
+  await new AgentOrchestrator(settings).stream({rootProject:sparseRoot,activeWorkspace:sparse,currentSceneId:'s1',userQuery:'List every scene in this episode where Sirisha appears and briefly explain what happens in each.'},()=>{});
+  const result=payload.messages.filter(m=>m.role==='tool').map(m=>JSON.parse(m.content)).find(r=>r.detail==='scene_summaries_only');
+  assert.deepEqual(result.data.map(scene=>scene.id),sceneIds);
+  assert.equal(result.returnedCount,6);assert.equal(result.episodeCoverage.returnedSceneCount,6);assert.equal(result.complete,true);
+  for(const scene of result.data.slice(2)){assert.equal(scene.summarySource,'screenplay_excerpt');assert.ok(scene.summary.includes('Sirisha action'));assert.ok(scene.summary.length<=600);assert.equal(scene.blocks,undefined);}
+});
