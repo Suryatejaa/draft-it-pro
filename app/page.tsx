@@ -1943,7 +1943,11 @@ export default function Home() {
                       <div className={'project-cover cover' + (i % 3)}>
                         <span>{p.format}</span>
                         <div className="project-cover-title-wrap">
-                          <h2 style={{ fontSize: `${projectCoverTitleSize(p.title)}px` }}>
+                          <h2
+                            style={{
+                              fontSize: `${projectCoverTitleSize(p.title)}px`,
+                            }}
+                          >
                             {p.title}
                           </h2>
                         </div>
@@ -3291,6 +3295,8 @@ export default function Home() {
         open={upgradeModalOpen}
         onOpenChange={setUpgradeModalOpen}
         targetFeatureName={upgradeTargetFeature}
+        user={user}
+        onEntitlementsRefresh={refreshEntitlements}
       />
       <Dialog open={create} onOpenChange={setCreate}>
         <DialogContent>

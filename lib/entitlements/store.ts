@@ -2,6 +2,7 @@ import type {
   PlanConfig,
   PlanId,
   DiscountConfig,
+  PlanRequest,
   UserSubscriptionRecord,
   AiUsageRecord,
   AiCreditPeriod,
@@ -10,7 +11,11 @@ import type {
   EnumerableAuthUser,
   SubscriptionStatus,
 } from './types.ts';
-import { DEFAULT_PLAN_CONFIGS } from './plans.ts';
+import {
+  DEFAULT_PLAN_CONFIGS,
+  FREE_PLAN_ID,
+  validatePlanConfig,
+} from './plans.ts';
 import { isUserAdmin } from './admin.ts';
 import { FirestoreEntitlementStore } from './firestore-store.ts';
 
@@ -18,12 +23,33 @@ export interface IEntitlementStore {
   // Plan Configurations
   getPlanConfigs(): Promise<Record<PlanId, PlanConfig>>;
   getPlanConfig(planId: PlanId): Promise<PlanConfig>;
-  updatePlanConfig(planId: PlanId, updates: Partial<PlanConfig>, adminUserId: string, adminEmail: string): Promise<PlanConfig>;
+  createPlanConfig(
+    plan: PlanConfig,
+    adminUserId: string,
+    adminEmail: string,
+  ): Promise<PlanConfig>;
+  updatePlanConfig(
+    planId: PlanId,
+    updates: Partial<PlanConfig>,
+    adminUserId: string,
+    adminEmail: string,
+  ): Promise<PlanConfig>;
+  deletePlanConfig(
+    planId: PlanId,
+    adminUserId: string,
+    adminEmail: string,
+  ): Promise<void>;
 
   // Subscriptions
   getSubscription(userId: string): Promise<UserSubscriptionRecord | null>;
   saveSubscription(subscription: UserSubscriptionRecord): Promise<void>;
-  grantPlan(userId: string, planId: PlanId, email: string | undefined, adminUserId: string, adminEmail: string): Promise<UserSubscriptionRecord>;
+  grantPlan(
+    userId: string,
+    planId: PlanId,
+    email: string | undefined,
+    adminUserId: string,
+    adminEmail: string,
+  ): Promise<UserSubscriptionRecord>;
   updateSubscription(
     userId: string,
     updates: {
@@ -33,46 +59,97 @@ export interface IEntitlementStore {
       currentPeriodEnd?: string;
     },
     adminUserId: string,
-    adminEmail: string
+    adminEmail: string,
   ): Promise<UserSubscriptionRecord>;
   extendSubscription(
     targetUserId: string,
     days: number,
     adminUserId: string,
-    adminEmail: string
+    adminEmail: string,
   ): Promise<UserSubscriptionRecord>;
   resetAiCredits(
     targetUserId: string,
     adminUserId: string,
-    adminEmail: string
+    adminEmail: string,
   ): Promise<AiCreditPeriod>;
-  suspendUser(userId: string, adminUserId: string, adminEmail: string): Promise<UserSubscriptionRecord>;
-  reactivateUser(userId: string, adminUserId: string, adminEmail: string): Promise<UserSubscriptionRecord>;
+  suspendUser(
+    userId: string,
+    adminUserId: string,
+    adminEmail: string,
+  ): Promise<UserSubscriptionRecord>;
+  reactivateUser(
+    userId: string,
+    adminUserId: string,
+    adminEmail: string,
+  ): Promise<UserSubscriptionRecord>;
   listAllSubscriptions(): Promise<UserSubscriptionRecord[]>;
 
   // Discounts
   getDiscounts(): Promise<DiscountConfig[]>;
-  createDiscount(discount: Omit<DiscountConfig, 'id' | 'createdAt' | 'updatedAt'>, adminUserId: string, adminEmail: string): Promise<DiscountConfig>;
-  updateDiscount(id: string, updates: Partial<DiscountConfig>, adminUserId: string, adminEmail: string): Promise<DiscountConfig>;
-  toggleDiscount(id: string, enabled: boolean, adminUserId: string, adminEmail: string): Promise<DiscountConfig>;
+  createDiscount(
+    discount: Omit<DiscountConfig, 'id' | 'createdAt' | 'updatedAt'>,
+    adminUserId: string,
+    adminEmail: string,
+  ): Promise<DiscountConfig>;
+  deleteDiscount(
+    id: string,
+    adminUserId: string,
+    adminEmail: string,
+  ): Promise<void>;
+  updateDiscount(
+    id: string,
+    updates: Partial<DiscountConfig>,
+    adminUserId: string,
+    adminEmail: string,
+  ): Promise<DiscountConfig>;
+  toggleDiscount(
+    id: string,
+    enabled: boolean,
+    adminUserId: string,
+    adminEmail: string,
+  ): Promise<DiscountConfig>;
+
+  // Paid plan requests
+  createPlanRequest(
+    request: Omit<PlanRequest, 'id' | 'status' | 'createdAt'>,
+  ): Promise<PlanRequest>;
+  getPendingPlanRequest(
+    uid: string,
+    requestedPlanId: Exclude<PlanId, 'free'>,
+  ): Promise<PlanRequest | null>;
+  listPendingPlanRequestsForUser(uid: string): Promise<PlanRequest[]>;
+  listPendingPlanRequests(): Promise<PlanRequest[]>;
+  processPlanRequest(
+    id: string,
+    status: 'approved' | 'rejected',
+    adminUserId: string,
+    adminEmail: string,
+  ): Promise<PlanRequest>;
 
   // AI Credit Periods
   getCreditPeriod(userId: string, now?: Date): Promise<AiCreditPeriod>;
   saveCreditPeriod(period: AiCreditPeriod): Promise<void>;
-  reserveCreditAtomically?(userId: string, requestedPaise: number): Promise<AiCreditPeriod>;
+  reserveCreditAtomically?(
+    userId: string,
+    requestedPaise: number,
+  ): Promise<AiCreditPeriod>;
 
   // AI Usage Ledger (Append-Only)
   appendAiUsage(record: AiUsageRecord): Promise<void>;
   hasRequestId(requestId: string): Promise<boolean>;
   getAiUsageHistory(userId?: string): Promise<AiUsageRecord[]>;
-  getAdminUserAiUsageDetails(authUsers?: EnumerableAuthUser[]): Promise<AdminUserAiUsageDetail[]>;
+  getAdminUserAiUsageDetails(
+    authUsers?: EnumerableAuthUser[],
+  ): Promise<AdminUserAiUsageDetail[]>;
 
   // User Registry (Registered Firebase Auth users)
   registerUser(user: EnumerableAuthUser): Promise<void>;
   listRegisteredUsers(): Promise<EnumerableAuthUser[]>;
 
   // Audit Log
-  appendAuditLog(event: Omit<AdminAuditEvent, 'id' | 'timestamp'>): Promise<AdminAuditEvent>;
+  appendAuditLog(
+    event: Omit<AdminAuditEvent, 'id' | 'timestamp'>,
+  ): Promise<AdminAuditEvent>;
   getAuditLogs(): Promise<AdminAuditEvent[]>;
 
   // Testing / Reset
@@ -97,6 +174,7 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
   private plans: Record<PlanId, PlanConfig> = { ...DEFAULT_PLAN_CONFIGS };
   private subscriptions: Map<string, UserSubscriptionRecord> = new Map();
   private discounts: Map<string, DiscountConfig> = new Map();
+  private planRequests: Map<string, PlanRequest> = new Map();
   private creditPeriods: Map<string, AiCreditPeriod> = new Map();
   private usageLedger: Map<string, AiUsageRecord> = new Map();
   private auditLog: AdminAuditEvent[] = [];
@@ -107,6 +185,7 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
     this.plans = { ...DEFAULT_PLAN_CONFIGS };
     this.subscriptions.clear();
     this.discounts.clear();
+    this.planRequests.clear();
     this.creditPeriods.clear();
     this.usageLedger.clear();
     this.auditLog = [];
@@ -119,22 +198,58 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
   }
 
   async getPlanConfig(planId: PlanId): Promise<PlanConfig> {
-    return this.plans[planId] || DEFAULT_PLAN_CONFIGS[planId] || DEFAULT_PLAN_CONFIGS.free;
+    return (
+      this.plans[planId] ||
+      DEFAULT_PLAN_CONFIGS[planId] ||
+      DEFAULT_PLAN_CONFIGS.free
+    );
+  }
+
+  async createPlanConfig(
+    plan: PlanConfig,
+    adminUserId: string,
+    adminEmail: string,
+  ): Promise<PlanConfig> {
+    if (this.plans[plan.id])
+      throw new Error('A plan with this ID already exists.');
+    const validation = validatePlanConfig(plan, this.plans);
+    if (!validation.valid) throw new Error(validation.error);
+    const created = {
+      ...plan,
+      createdAt: plan.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    this.plans[plan.id] = created;
+    await this.appendAuditLog({
+      actorAdminUserId: adminUserId,
+      actorAdminEmail: adminEmail,
+      targetUserId: `plan_${plan.id}`,
+      action: 'create_plan',
+      previousValue: null,
+      newValue: created,
+    });
+    return created;
   }
 
   async updatePlanConfig(
     planId: PlanId,
     updates: Partial<PlanConfig>,
     adminUserId: string,
-    adminEmail: string
+    adminEmail: string,
   ): Promise<PlanConfig> {
-    const existing = await this.getPlanConfig(planId);
+    if (planId === FREE_PLAN_ID && updates.active === false) {
+      throw new Error('The Free plan must remain active.');
+    }
+    const existing = this.plans[planId];
+    if (!existing) throw new Error('Plan not found.');
     const updated: PlanConfig = {
       ...existing,
       ...updates,
       id: planId,
       updatedAt: new Date().toISOString(),
     };
+    const validation = validatePlanConfig(updated, this.plans);
+    if (!validation.valid) throw new Error(validation.error);
     this.plans[planId] = updated;
 
     await this.appendAuditLog({
@@ -149,7 +264,45 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
     return updated;
   }
 
-  async getSubscription(userId: string): Promise<UserSubscriptionRecord | null> {
+  async deletePlanConfig(
+    planId: PlanId,
+    adminUserId: string,
+    adminEmail: string,
+  ): Promise<void> {
+    if (planId === FREE_PLAN_ID)
+      throw new Error('The Free plan cannot be deleted.');
+    if (!this.plans[planId]) throw new Error('Plan not found.');
+    const referenced =
+      [...this.subscriptions.values()].some((item) => item.planId === planId) ||
+      [...this.creditPeriods.values()].some((item) => item.planId === planId) ||
+      [...this.planRequests.values()].some(
+        (item) =>
+          item.requestedPlanId === planId || item.currentPlanId === planId,
+      ) ||
+      [...this.discounts.values()].some((item) =>
+        item.applicablePlanIds.includes(planId),
+      ) ||
+      this.auditLog.some(
+        (event) =>
+          event.targetUserId !== `plan_${planId}` &&
+          JSON.stringify(event).includes(`"${planId}"`),
+      );
+    if (referenced) throw new Error('Referenced plans can only be archived.');
+    const previous = this.plans[planId];
+    delete this.plans[planId];
+    await this.appendAuditLog({
+      actorAdminUserId: adminUserId,
+      actorAdminEmail: adminEmail,
+      targetUserId: `plan_${planId}`,
+      action: 'delete_plan',
+      previousValue: previous,
+      newValue: null,
+    });
+  }
+
+  async getSubscription(
+    userId: string,
+  ): Promise<UserSubscriptionRecord | null> {
     return this.subscriptions.get(userId) || null;
   }
 
@@ -162,7 +315,7 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
     planId: PlanId,
     email?: string,
     adminUserId = 'system',
-    adminEmail = 'system@draftit.pro'
+    adminEmail = 'system@draftit.pro',
   ): Promise<UserSubscriptionRecord> {
     const existing = await this.getSubscription(userId);
     const now = new Date();
@@ -197,8 +350,14 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
       actorAdminEmail: adminEmail,
       targetUserId: userId,
       action: 'grant_plan',
-      previousValue: existing ? { planId: existing.planId, status: existing.status } : null,
-      newValue: { planId, status: updated.status, allowancePaise: planConfig.aiMonthlyBudgetPaise },
+      previousValue: existing
+        ? { planId: existing.planId, status: existing.status }
+        : null,
+      newValue: {
+        planId,
+        status: updated.status,
+        allowancePaise: planConfig.aiMonthlyBudgetPaise,
+      },
     });
 
     return updated;
@@ -207,7 +366,7 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
   async suspendUser(
     userId: string,
     adminUserId: string,
-    adminEmail: string
+    adminEmail: string,
   ): Promise<UserSubscriptionRecord> {
     let sub = await this.getSubscription(userId);
     const now = new Date();
@@ -248,7 +407,7 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
   async reactivateUser(
     userId: string,
     adminUserId: string,
-    adminEmail: string
+    adminEmail: string,
   ): Promise<UserSubscriptionRecord> {
     const sub = await this.getSubscription(userId);
     const now = new Date();
@@ -285,12 +444,18 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
       currentPeriodEnd?: string;
     },
     adminUserId: string,
-    adminEmail: string
+    adminEmail: string,
   ): Promise<UserSubscriptionRecord> {
     const existing = await this.getSubscription(userId);
     const now = new Date();
-    const periodStart = updates.currentPeriodStart || existing?.currentPeriodStart || now.toISOString();
-    const periodEnd = updates.currentPeriodEnd || existing?.currentPeriodEnd || addOneMonth(periodStart);
+    const periodStart =
+      updates.currentPeriodStart ||
+      existing?.currentPeriodStart ||
+      now.toISOString();
+    const periodEnd =
+      updates.currentPeriodEnd ||
+      existing?.currentPeriodEnd ||
+      addOneMonth(periodStart);
 
     if (isNaN(new Date(periodStart).getTime())) {
       throw new Error('Invalid currentPeriodStart date.');
@@ -340,8 +505,18 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
       targetUserId: userId,
       action: 'update_subscription',
       previousValue: existing
-        ? { planId: existing.planId, status: existing.status, currentPeriodStart: existing.currentPeriodStart, currentPeriodEnd: existing.currentPeriodEnd }
-        : { planId: 'free', status: 'active', currentPeriodStart: periodStart, currentPeriodEnd: periodEnd },
+        ? {
+            planId: existing.planId,
+            status: existing.status,
+            currentPeriodStart: existing.currentPeriodStart,
+            currentPeriodEnd: existing.currentPeriodEnd,
+          }
+        : {
+            planId: 'free',
+            status: 'active',
+            currentPeriodStart: periodStart,
+            currentPeriodEnd: periodEnd,
+          },
       newValue: {
         planId: updated.planId,
         status: updated.status,
@@ -357,9 +532,14 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
     targetUserId: string,
     days: number,
     adminUserId: string,
-    adminEmail: string
+    adminEmail: string,
   ): Promise<UserSubscriptionRecord> {
-    if (!days || typeof days !== 'number' || days <= 0 || !Number.isFinite(days)) {
+    if (
+      !days ||
+      typeof days !== 'number' ||
+      days <= 0 ||
+      !Number.isFinite(days)
+    ) {
       throw new Error('Extension days must be a positive integer.');
     }
     const existing = await this.getSubscription(targetUserId);
@@ -379,8 +559,13 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
     const oldEndDate = new Date(oldPeriodEnd);
     // If currentPeriodEnd is already expired and admin chooses "extend 30 days",
     // prefer extending from max(now, currentPeriodEnd).
-    const baseTime = oldEndDate.getTime() > now.getTime() ? oldEndDate.getTime() : now.getTime();
-    const newEndDate = new Date(baseTime + Math.round(days) * 24 * 60 * 60 * 1000);
+    const baseTime =
+      oldEndDate.getTime() > now.getTime()
+        ? oldEndDate.getTime()
+        : now.getTime();
+    const newEndDate = new Date(
+      baseTime + Math.round(days) * 24 * 60 * 60 * 1000,
+    );
     const newPeriodEnd = newEndDate.toISOString();
 
     const updated: UserSubscriptionRecord = {
@@ -410,7 +595,7 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
   async resetAiCredits(
     targetUserId: string,
     adminUserId: string,
-    adminEmail: string
+    adminEmail: string,
   ): Promise<AiCreditPeriod> {
     const sub = await this.getSubscription(targetUserId);
     const planId = sub?.planId || 'free';
@@ -457,16 +642,26 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
   }
 
   async getDiscounts(): Promise<DiscountConfig[]> {
-    return Array.from(this.discounts.values());
+    return Array.from(this.discounts.values()).sort((a, b) =>
+      (b.createdAt || '').localeCompare(a.createdAt || ''),
+    );
   }
 
   async createDiscount(
     discount: Omit<DiscountConfig, 'id' | 'createdAt' | 'updatedAt'>,
     adminUserId: string,
-    adminEmail: string
+    adminEmail: string,
   ): Promise<DiscountConfig> {
     const id = `disc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const now = new Date().toISOString();
+    const latestCreatedAt = Math.max(
+      0,
+      ...Array.from(this.discounts.values()).map((item) =>
+        new Date(item.createdAt || 0).getTime(),
+      ),
+    );
+    const now = new Date(
+      Math.max(Date.now(), latestCreatedAt + 1),
+    ).toISOString();
     const created: DiscountConfig = {
       ...discount,
       id,
@@ -491,7 +686,7 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
     id: string,
     updates: Partial<DiscountConfig>,
     adminUserId: string,
-    adminEmail: string
+    adminEmail: string,
   ): Promise<DiscountConfig> {
     const existing = this.discounts.get(id);
     if (!existing) throw new Error(`Discount ${id} not found.`);
@@ -520,7 +715,7 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
     id: string,
     enabled: boolean,
     adminUserId: string,
-    adminEmail: string
+    adminEmail: string,
   ): Promise<DiscountConfig> {
     const existing = this.discounts.get(id);
     if (!existing) throw new Error(`Discount ${id} not found.`);
@@ -544,7 +739,129 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
     return updated;
   }
 
-  async getCreditPeriod(userId: string, now: Date = new Date()): Promise<AiCreditPeriod> {
+  async deleteDiscount(
+    id: string,
+    adminUserId: string,
+    adminEmail: string,
+  ): Promise<void> {
+    const existing = this.discounts.get(id);
+    if (!existing) throw new Error(`Discount ${id} not found.`);
+    if (
+      this.auditLog.some(
+        (event) =>
+          event.targetUserId !== `discount_${id}` &&
+          JSON.stringify(event).includes(`"${id}"`),
+      )
+    ) {
+      throw new Error(
+        'Discount is referenced by audit history and can only be disabled.',
+      );
+    }
+    this.discounts.delete(id);
+    await this.appendAuditLog({
+      actorAdminUserId: adminUserId,
+      actorAdminEmail: adminEmail,
+      targetUserId: `discount_${id}`,
+      action: 'delete_discount',
+      previousValue: existing,
+      newValue: null,
+    });
+  }
+
+  async createPlanRequest(
+    request: Omit<PlanRequest, 'id' | 'status' | 'createdAt'>,
+  ): Promise<PlanRequest> {
+    const duplicate = await this.getPendingPlanRequest(
+      request.uid,
+      request.requestedPlanId,
+    );
+    if (duplicate) return duplicate;
+    const created: PlanRequest = {
+      ...request,
+      id: `plan_request_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    };
+    this.planRequests.set(created.id, created);
+    return created;
+  }
+
+  async getPendingPlanRequest(
+    uid: string,
+    requestedPlanId: Exclude<PlanId, 'free'>,
+  ): Promise<PlanRequest | null> {
+    return (
+      Array.from(this.planRequests.values()).find(
+        (request) =>
+          request.uid === uid &&
+          request.requestedPlanId === requestedPlanId &&
+          request.status === 'pending',
+      ) || null
+    );
+  }
+
+  async listPendingPlanRequestsForUser(uid: string): Promise<PlanRequest[]> {
+    return Array.from(this.planRequests.values()).filter(
+      (request) => request.uid === uid && request.status === 'pending',
+    );
+  }
+
+  async listPendingPlanRequests(): Promise<PlanRequest[]> {
+    return Array.from(this.planRequests.values())
+      .filter((request) => request.status === 'pending')
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async processPlanRequest(
+    id: string,
+    status: 'approved' | 'rejected',
+    adminUserId: string,
+    adminEmail: string,
+  ): Promise<PlanRequest> {
+    const request = this.planRequests.get(id);
+    if (!request) throw new Error('Plan request not found.');
+    if (request.status !== 'pending')
+      throw new Error('Plan request has already been processed.');
+    if (status === 'approved') {
+      const plan = await this.getPlanConfig(request.requestedPlanId);
+      if (
+        plan.id !== request.requestedPlanId ||
+        !plan.active ||
+        plan.id === 'free' ||
+        plan.monthlyPricePaise <= 0
+      ) {
+        throw new Error('The requested plan is no longer available.');
+      }
+      await this.updateSubscription(
+        request.uid,
+        { planId: request.requestedPlanId },
+        adminUserId,
+        adminEmail,
+      );
+    }
+    const processed = {
+      ...request,
+      status,
+      processedAt: new Date().toISOString(),
+      processedBy: adminUserId,
+    } as PlanRequest;
+    this.planRequests.set(id, processed);
+    await this.appendAuditLog({
+      actorAdminUserId: adminUserId,
+      actorAdminEmail: adminEmail,
+      targetUserId: request.uid,
+      action:
+        status === 'approved' ? 'approve_plan_request' : 'reject_plan_request',
+      previousValue: request,
+      newValue: processed,
+    });
+    return processed;
+  }
+
+  async getCreditPeriod(
+    userId: string,
+    now: Date = new Date(),
+  ): Promise<AiCreditPeriod> {
     const sub = await this.getSubscription(userId);
     const planConfig = await this.getPlanConfig(sub?.planId || 'free');
 
@@ -590,10 +907,7 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
         updatedAt: now.toISOString(),
       };
       this.creditPeriods.set(periodKey, period);
-    } else if (
-      period.planId &&
-      period.planId !== (sub?.planId || 'free')
-    ) {
+    } else if (period.planId && period.planId !== (sub?.planId || 'free')) {
       // Plan transitions update the allowance without resetting usage.
       period = {
         ...period,
@@ -604,7 +918,11 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
         updatedAt: now.toISOString(),
       };
       this.creditPeriods.set(periodKey, period);
-    } else if (!period.planId && period.budgetPaise === 0 && planConfig.aiMonthlyBudgetPaise > 0) {
+    } else if (
+      !period.planId &&
+      period.budgetPaise === 0 &&
+      planConfig.aiMonthlyBudgetPaise > 0
+    ) {
       // Repair legacy Free periods created before planId was persisted.
       period = {
         ...period,
@@ -621,7 +939,10 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
   }
 
   async saveCreditPeriod(period: AiCreditPeriod): Promise<void> {
-    this.creditPeriods.set(period.id, { ...period, updatedAt: new Date().toISOString() });
+    this.creditPeriods.set(period.id, {
+      ...period,
+      updatedAt: new Date().toISOString(),
+    });
   }
 
   async appendAiUsage(record: AiUsageRecord): Promise<void> {
@@ -645,12 +966,17 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
     return all;
   }
 
-  async getAdminUserAiUsageDetails(authUsers?: EnumerableAuthUser[]): Promise<AdminUserAiUsageDetail[]> {
+  async getAdminUserAiUsageDetails(
+    authUsers?: EnumerableAuthUser[],
+  ): Promise<AdminUserAiUsageDetail[]> {
     const details: AdminUserAiUsageDetail[] = [];
     const now = new Date();
 
     // Build a subscription index for O(1) lookup
-    const subMap = new Map<string, import('./types.ts').UserSubscriptionRecord>();
+    const subMap = new Map<
+      string,
+      import('./types.ts').UserSubscriptionRecord
+    >();
     for (const sub of await this.listAllSubscriptions()) {
       subMap.set(sub.userId, sub);
     }
@@ -668,20 +994,29 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
 
         const period = await this.getCreditPeriod(authUser.uid, now);
 
-        const usageRecords = (await this.getAiUsageHistory(authUser.uid)).filter(
+        const usageRecords = (
+          await this.getAiUsageHistory(authUser.uid)
+        ).filter(
           (r) =>
             new Date(r.createdAt) >= new Date(period.periodStart) &&
-            new Date(r.createdAt) <= new Date(period.periodEnd)
+            new Date(r.createdAt) <= new Date(period.periodEnd),
         );
 
-        const promptTokens = usageRecords.reduce((acc, r) => acc + r.promptTokens, 0);
-        const completionTokens = usageRecords.reduce((acc, r) => acc + r.completionTokens, 0);
+        const promptTokens = usageRecords.reduce(
+          (acc, r) => acc + r.promptTokens,
+          0,
+        );
+        const completionTokens = usageRecords.reduce(
+          (acc, r) => acc + r.completionTokens,
+          0,
+        );
         const totalTokens = promptTokens + completionTokens;
         const consumedPaise = period.consumedPaise;
         const remainingPaise = Math.max(0, period.budgetPaise - consumedPaise);
 
         const lastAiRecord = [...usageRecords].sort(
-          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          (a, b) =>
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
         )[0];
 
         details.push({
@@ -725,17 +1060,24 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
       const usageRecords = (await this.getAiUsageHistory(sub.userId)).filter(
         (r) =>
           new Date(r.createdAt) >= new Date(period.periodStart) &&
-          new Date(r.createdAt) <= new Date(period.periodEnd)
+          new Date(r.createdAt) <= new Date(period.periodEnd),
       );
 
-      const promptTokens = usageRecords.reduce((acc, r) => acc + r.promptTokens, 0);
-      const completionTokens = usageRecords.reduce((acc, r) => acc + r.completionTokens, 0);
+      const promptTokens = usageRecords.reduce(
+        (acc, r) => acc + r.promptTokens,
+        0,
+      );
+      const completionTokens = usageRecords.reduce(
+        (acc, r) => acc + r.completionTokens,
+        0,
+      );
       const totalTokens = promptTokens + completionTokens;
       const consumedPaise = period.consumedPaise;
       const remainingPaise = Math.max(0, period.budgetPaise - consumedPaise);
 
       const lastAiRecord = [...usageRecords].sort(
-        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
       )[0];
 
       details.push({
@@ -771,7 +1113,7 @@ export class InMemoryEntitlementStore implements IEntitlementStore {
   }
 
   async appendAuditLog(
-    event: Omit<AdminAuditEvent, 'id' | 'timestamp'>
+    event: Omit<AdminAuditEvent, 'id' | 'timestamp'>,
   ): Promise<AdminAuditEvent> {
     const fullEvent: AdminAuditEvent = {
       ...event,

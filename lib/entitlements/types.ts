@@ -1,4 +1,4 @@
-export type PlanId = 'free' | 'plus' | 'ai_plus';
+export type PlanId = string;
 
 export type FeatureId =
   | 'workspace'
@@ -14,6 +14,7 @@ export type FeatureId =
 
 export type SubscriptionStatus = 'active' | 'suspended';
 export type SubscriptionSource = 'free' | 'admin_grant' | 'billing';
+export type PlanRequestStatus = 'pending' | 'approved' | 'rejected';
 
 export interface PlanConfig {
   id: PlanId;
@@ -22,6 +23,7 @@ export interface PlanConfig {
   aiMonthlyBudgetPaise: number;
   features: FeatureId[];
   active: boolean;
+  displayOrder?: number;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -33,7 +35,7 @@ export interface UserSubscriptionRecord {
   status: SubscriptionStatus;
   subscriptionSource: SubscriptionSource;
   currentPeriodStart: string; // ISO string
-  currentPeriodEnd: string;   // ISO string
+  currentPeriodEnd: string; // ISO string
   createdAt: string;
   updatedAt: string;
   // Reserved for future payment provider integration
@@ -51,10 +53,36 @@ export interface DiscountConfig {
   value: number; // percentage (0-100) or fixed amount in paise
   applicablePlanIds: PlanId[];
   startsAt: string; // ISO string
-  endsAt: string;   // ISO string
+  endsAt: string; // ISO string
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface PlanRequest {
+  id: string;
+  uid: string;
+  email?: string | null;
+  displayName?: string | null;
+  requestedPlanId: Exclude<PlanId, 'free'>;
+  currentPlanId?: PlanId;
+  status: PlanRequestStatus;
+  createdAt: string;
+  processedAt?: string;
+  processedBy?: string;
+}
+
+export interface CustomerPlanPricing {
+  id: PlanId;
+  name: string;
+  basePricePaise: number;
+  effectivePricePaise: number;
+  hasDiscount: boolean;
+  discount?: Pick<
+    DiscountConfig,
+    'id' | 'name' | 'type' | 'value' | 'startsAt' | 'endsAt'
+  >;
+  features: FeatureId[];
 }
 
 export interface AiUsageRecord {
@@ -80,7 +108,7 @@ export interface AiCreditPeriod {
   /** Plan whose allowance was last synchronized into this active period. */
   planId?: PlanId;
   periodStart: string; // ISO string
-  periodEnd: string;   // ISO string
+  periodEnd: string; // ISO string
   budgetPaise: number;
   consumedPaise: number;
   reservedPaise: number;
@@ -107,12 +135,19 @@ export interface AdminAuditEvent {
     | 'reactivate'
     | 'grant_plan'
     | 'update_plan'
+    | 'create_plan'
+    | 'delete_plan'
+    | 'archive_plan'
     | 'update_subscription'
     | 'extend_subscription'
     | 'reset_ai_credits'
     | 'create_discount'
     | 'update_discount'
-    | 'toggle_discount';
+    | 'toggle_discount'
+    | 'delete_discount'
+    | 'create_plan_request'
+    | 'approve_plan_request'
+    | 'reject_plan_request';
   previousValue: unknown;
   newValue: unknown;
   timestamp: string;

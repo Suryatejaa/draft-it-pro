@@ -52,5 +52,10 @@ service cloud.firestore {
     match /adminAuditLog/{eventId} {
       allow read, write: if false;
     }
+
+    // Plan requests are server-owned; clients cannot read or write them directly.
+    match /planRequests/{requestId} {
+      allow read, write: if false;
+    }
   }
 }
