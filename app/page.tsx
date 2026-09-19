@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import Link from 'next/link';
 import {
   Clapperboard,
   LayoutDashboard,
@@ -29,7 +30,10 @@ import {
   Settings,
   Copy,
   RefreshCw,
+  Lock,
+  Shield,
 } from 'lucide-react';
+
 import { planSceneStoryboard } from '@/lib/storyboard-planner';
 import {
   buildStoryboardPrompt,
@@ -54,6 +58,7 @@ import {
   DialogContent,
   DialogTitle,
   DialogDescription,
+  DialogFooter,
 } from '@/components/ui/dialog';
 import {
   Sheet,
@@ -100,6 +105,15 @@ import {
   type Panel,
   type Person,
 } from '@/lib/project';
+import type {
+  ScreenplayProposal,
+  ScreenplaySelection,
+} from '@/lib/ai/screenplay-proposal';
+import { resolveCoDrafterEditableBlocks } from '@/lib/ai/co-drafter-selection';
+import {
+  getCompatibleCoDrafterActions,
+  type CoDrafterAction,
+} from '@/lib/ai/co-drafter-actions';
 import ScriptEditor from './script-editor';
 import { deleteElement, type DeleteKind } from '@/lib/deletions';
 import {
@@ -122,11 +136,42 @@ import { MobileSceneCards } from '@/components/mobile/mobile-scene-cards';
 import { MobileStoryboard } from '@/components/mobile/mobile-storyboard';
 import { MobileEntities } from '@/components/mobile/mobile-entities';
 import { MobileShotList } from '@/components/mobile/mobile-shot-list';
+import { MobileAccountSheet } from '@/components/mobile/mobile-account-sheet';
 import { copyProductionFiles } from '@/lib/production-files';
-import { ProductionWorkspace, productionViews, workspaceGroups } from '@/components/production-workspace';
+import {
+  ProductionWorkspace,
+  productionViews,
+  workspaceGroups,
+} from '@/components/production-workspace';
 import { CoWriterDrawer } from '@/components/ai/co-writer-drawer';
 import { AIProviderSettings } from '@/components/ai/ai-provider-settings';
-const nav = workspaceGroups.flatMap(g => g.views.map(v => [v, v === 'Screenplay' ? FileText : v === 'Characters' || v === 'Cast & Crew' ? Users : v === 'Locations' ? MapPin : v === 'Storyboard' ? Images : v === 'Shot list' ? ListVideo : v === 'Export' ? Download : v === 'Story' ? BookOpen : v === 'Scene cards' ? Columns3 : LayoutDashboard] as const));
+import { useEntitlements } from '@/hooks/use-entitlements';
+import { UpgradeModal } from '@/components/billing/upgrade-modal';
+const nav = workspaceGroups.flatMap((g) =>
+  g.views.map(
+    (v) =>
+      [
+        v,
+        v === 'Screenplay'
+          ? FileText
+          : v === 'Characters' || v === 'Cast & Crew'
+            ? Users
+            : v === 'Locations'
+              ? MapPin
+              : v === 'Storyboard'
+                ? Images
+                : v === 'Shot list'
+                  ? ListVideo
+                  : v === 'Export'
+                    ? Download
+                    : v === 'Story'
+                      ? BookOpen
+                      : v === 'Scene cards'
+                        ? Columns3
+                        : LayoutDashboard,
+      ] as const,
+  ),
+);
 const descriptions: Record<string, string> = {
   'Series overview':
     'Shape the series. Develop each episode in its own workspace.',
@@ -140,6 +185,10 @@ const descriptions: Record<string, string> = {
   Locations: 'The places your story calls home.',
   Export: 'Take your work into the next stage.',
 };
+
+function projectCoverTitleSize(title: string) {
+  return Math.max(22, Math.min(36, 36 - Math.max(0, title.length - 10) * 1.1));
+}
 const emotionColours = [
   { name: 'None', colour: '' },
   { name: 'Joy', colour: '#d8ad35' },
@@ -240,7 +289,17 @@ export default function Home() {
     signOut,
     retry: retrySync,
   } = useWorkspace();
-  const { isMobile } = useDeviceMode();
+  const { isMobile, isTablet } = useDeviceMode();
+  const {
+    entitlements,
+    isViewLocked,
+    canAccessByok,
+    isAdmin,
+    aiCreditStatus,
+    refresh: refreshEntitlements,
+  } = useEntitlements(user);
+  const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
+  const [upgradeTargetFeature, setUpgradeTargetFeature] = useState('');
   const [projectId, setProjectId] = useState(''),
     [view, setView] = useState('Scene cards'),
     [dashboard, setDashboard] = useState(false),
@@ -278,6 +337,24 @@ export default function Home() {
     } | null>(null);
   const [scriptTypingFocus, setScriptTypingFocus] = useState(false);
   const [coWriterOpen, setCoWriterOpen] = useState(false);
+  const [screenplaySelection, setScreenplaySelection] =
+    useState<ScreenplaySelection | null>(null);
+  const [clearSelectionNonce, setClearSelectionNonce] = useState(0);
+  const [coDrafterChooserOpen, setCoDrafterChooserOpen] = useState(false);
+  const [coDrafterChoiceId, setCoDrafterChoiceId] = useState('');
+  const [coDrafterModalStep, setCoDrafterModalStep] = useState<1 | 2>(1);
+  const [coDrafterActiveBlockId, setCoDrafterActiveBlockId] = useState('');
+  const [coDrafterPendingAction, setCoDrafterPendingAction] = useState<{
+    intent: 'custom' | ScreenplayProposal['intent'];
+    prompt: string;
+    nonce: number;
+  } | null>(null);
+  const [coDrafterCustomInstruction, setCoDrafterCustomInstruction] =
+    useState('');
+  const proposalActions = useRef<{
+    apply: (proposal: ScreenplayProposal) => boolean;
+    insertBelow: (proposal: ScreenplayProposal) => boolean;
+  } | null>(null);
   const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
   const rootProject = projects.find((p) => p.id === projectId) ?? projects[0];
   const isSeries = rootProject?.kind === 'series';
@@ -290,7 +367,118 @@ export default function Home() {
       : rootProject;
   const scene =
     project?.scenes.find((s) => s.id === sceneId) ?? project?.scenes[0];
+  const selectedCoDrafterBlocks = resolveCoDrafterEditableBlocks(
+    screenplaySelection,
+    scene?.blocks ?? [],
+  );
+  const selectedCoDrafterBlock =
+    selectedCoDrafterBlocks.find(
+      (block) => block.id === coDrafterActiveBlockId,
+    ) ??
+    (selectedCoDrafterBlocks.length === 1
+      ? selectedCoDrafterBlocks[0]
+      : undefined);
+  const compatibleLaunchActions = selectedCoDrafterBlock
+    ? getCompatibleCoDrafterActions(selectedCoDrafterBlock.type)
+    : [];
+  const openCoDrafterForSelection = () => {
+    if (!screenplaySelection || !scene) return;
+    const eligible = resolveCoDrafterEditableBlocks(
+      screenplaySelection,
+      scene.blocks,
+    );
+    if (eligible.length === 0) return;
+    if (eligible.length === 1) {
+      setCoDrafterActiveBlockId(eligible[0].id);
+      setCoDrafterModalStep(2);
+      setCoDrafterChooserOpen(true);
+      return;
+    }
+    setCoDrafterChoiceId('');
+    setCoDrafterActiveBlockId('');
+    setCoDrafterModalStep(1);
+    setCoDrafterChooserOpen(true);
+  };
+  const continueCoDrafterChoice = () => {
+    if (!coDrafterChoiceId) return;
+    setCoDrafterActiveBlockId(coDrafterChoiceId);
+    setCoDrafterModalStep(2);
+  };
+  const launchCoDrafterAction = (
+    action: CoDrafterAction,
+    customPrompt?: string,
+  ) => {
+    if (!screenplaySelection) return;
+    const chosen = selectedCoDrafterBlocks.find(
+      (block) => block.id === (coDrafterActiveBlockId || coDrafterChoiceId),
+    );
+    if (!chosen) return;
+    setScreenplaySelection({
+      ...screenplaySelection,
+      selectedBlockIds: [chosen.id],
+      selectedText: chosen.content,
+      blockTypes: [chosen.type],
+    });
+    setCoDrafterChooserOpen(false);
+    setCoWriterOpen(true);
+    setCoDrafterPendingAction({
+      intent: action.id,
+      prompt: customPrompt || action.prompt,
+      nonce: Date.now(),
+    });
+  };
+  const launchCustomCoDrafterAction = () => {
+    const instruction = coDrafterCustomInstruction.trim();
+    if (!instruction || !selectedCoDrafterBlock) return;
+    launchCoDrafterAction(
+      {
+        id: 'custom',
+        label: 'Custom',
+        prompt: instruction,
+        types: [selectedCoDrafterBlock.type],
+      },
+      instruction,
+    );
+    setCoDrafterCustomInstruction('');
+  };
+  const launchMobileCoDrafterAction = (
+    action: 'tighten' | 'alternatives' | 'custom',
+  ) => {
+    if (action === 'custom') {
+      openCoDrafterForSelection();
+      return;
+    }
+    const eligible = resolveCoDrafterEditableBlocks(
+      screenplaySelection,
+      scene?.blocks ?? [],
+    );
+    if (eligible.length !== 1) {
+      openCoDrafterForSelection();
+      return;
+    }
+    setScreenplaySelection({
+      ...screenplaySelection!,
+      selectedBlockIds: [eligible[0].id],
+      selectedText: eligible[0].content,
+      blockTypes: [eligible[0].type],
+    });
+    setCoWriterOpen(true);
+    setCoDrafterPendingAction({
+      intent: action,
+      prompt:
+        action === 'tighten'
+          ? 'Tighten this selection'
+          : 'Suggest alternatives',
+      nonce: Date.now(),
+    });
+  };
   const { lastBackups, backupErrors } = useBackups(projects, loaded, scope);
+  useEffect(() => {
+    if (view === 'Screenplay') return;
+    setCoWriterOpen(false);
+    setCoDrafterChooserOpen(false);
+    setCoDrafterPendingAction(null);
+  }, [view]);
   useEffect(() => {
     setDeletion(null);
     setProjectId('');
@@ -321,8 +509,15 @@ export default function Home() {
     );
   }
   function patchScene(id: string, patch: Partial<Scene>) {
-    if (patch.blocks && !parseSceneHeading(patch.blocks.find(b=>b.type==='scene_heading')?.content ?? '')) {
-      setNotice('Scene heading needs a valid INT/EXT location. The unfinished heading has not been saved.');
+    if (
+      patch.blocks &&
+      !parseSceneHeading(
+        patch.blocks.find((b) => b.type === 'scene_heading')?.content ?? '',
+      )
+    ) {
+      setNotice(
+        'Scene heading needs a valid INT/EXT location. The unfinished heading has not been saved.',
+      );
       return;
     }
     update((p) =>
@@ -331,6 +526,57 @@ export default function Home() {
         scenes: p.scenes.map((s) => (s.id === id ? { ...s, ...patch } : s)),
       }),
     );
+  }
+  function applyScreenplayProposal(
+    proposal: ScreenplayProposal,
+    insertBelow = false,
+  ) {
+    const currentScene = project.scenes.find(
+      (candidate) => candidate.id === proposal.sceneId,
+    );
+    if (!currentScene) return 'missing' as const;
+    if (proposal.noOp || proposal.proposalError) return 'missing' as const;
+    if (proposal.operations.length === 0) return 'missing' as const;
+    const operationIds = proposal.operations.map(
+      (operation) => operation.sourceBlockId,
+    );
+    if (new Set(operationIds).size !== operationIds.length)
+      return 'missing' as const;
+    if (
+      proposal.intent === 'alternatives' &&
+      (operationIds.length !== proposal.sourceBlockIds.length ||
+        operationIds.some((id, index) => id !== proposal.sourceBlockIds[index]))
+    )
+      return 'missing' as const;
+    if (
+      !proposal.operations.every((operation) => {
+        const source = currentScene.blocks.find(
+          (block) => block.id === operation.sourceBlockId,
+        );
+        return (
+          source?.type === operation.type &&
+          source.content.trim() !== operation.text.trim()
+        );
+      })
+    )
+      return 'missing' as const;
+    if (
+      !proposal.operations.every((operation) =>
+        currentScene.blocks.some(
+          (block) => block.id === operation.sourceBlockId,
+        ),
+      )
+    )
+      return 'missing' as const;
+    if (computeSceneContentHash(currentScene) !== proposal.sourceRevision)
+      return 'stale' as const;
+    return (
+      insertBelow
+        ? proposalActions.current?.insertBelow(proposal)
+        : proposalActions.current?.apply(proposal)
+    )
+      ? ('applied' as const)
+      : ('missing' as const);
   }
   function addScene(act = project.acts[0]) {
     const s = newScene(act);
@@ -590,14 +836,33 @@ export default function Home() {
       } else if (kind === 'Shot list') {
         const rows = [
           ['Shot', 'Scene', 'Size', 'Movement', 'Lens', 'Duration', 'Status'],
-          ...(project.shots ?? []).slice().sort((a,b)=>a.order-b.order).map(shot => [shot.shotCode, project.scenes.find(s=>s.id===shot.sceneId)?.heading ?? 'Removed scene', shot.shotSize, shot.movement, shot.lens, String(shot.duration), shot.status]),
+          ...(project.shots ?? [])
+            .slice()
+            .sort((a, b) => a.order - b.order)
+            .map((shot) => [
+              shot.shotCode,
+              project.scenes.find((s) => s.id === shot.sceneId)?.heading ??
+                'Removed scene',
+              shot.shotSize,
+              shot.movement,
+              shot.lens,
+              String(shot.duration),
+              shot.status,
+            ]),
         ];
         download(
           new Blob(
             [
               rows
                 .map((r) =>
-                  r.map((v) => '"' + v.replace(/^[=+@-]/, "'$&").replaceAll('"', '""') + '"').join(','),
+                  r
+                    .map(
+                      (v) =>
+                        '"' +
+                        v.replace(/^[=+@-]/, "'$&").replaceAll('"', '""') +
+                        '"',
+                    )
+                    .join(','),
                 )
                 .join('\n'),
             ],
@@ -704,8 +969,10 @@ export default function Home() {
         : view;
   return (
     <>
-      {isMobile ? (
-        <div className={`mobile-app-shell${scriptTypingFocus ? ' typing-distraction-free' : ''}`}>
+      {isMobile || isTablet ? (
+        <div
+          className={`mobile-app-shell${scriptTypingFocus ? ' typing-distraction-free' : ''}`}
+        >
           {dashboard ? (
             <div className="mobile-dashboard p-4">
               <header className="flex items-center justify-between pb-3 border-b border-border/50 mb-4">
@@ -713,9 +980,23 @@ export default function Home() {
                   <Clapperboard size={22} className="text-primary" />
                   <h1 className="text-base font-bold">Draft-it PRO</h1>
                 </div>
-                <Button size="sm" onClick={() => setCreate(true)} className="h-8 gap-1 text-xs">
-                  <Plus size={14} /> New Project
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => setCreate(true)}
+                    className="h-8 gap-1 text-xs"
+                  >
+                    <Plus size={14} /> New Project
+                  </Button>
+                  <MobileAccountSheet
+                    user={user}
+                    entitlements={entitlements}
+                    authBusy={authBusy}
+                    configured={configured}
+                    onSignIn={signIn}
+                    onSignOut={signOut}
+                  />
+                </div>
               </header>
 
               <div className="space-y-3">
@@ -729,14 +1010,18 @@ export default function Home() {
                     onClick={() => {
                       setProjectId(p.id);
                       setSceneId('');
-                      setView(p.kind === 'series' ? 'Series overview' : 'Scene cards');
+                      setView(
+                        p.kind === 'series' ? 'Series overview' : 'Scene cards',
+                      );
                       setEpisodeId(p.episodes?.[0]?.id ?? '');
                       setDashboard(false);
                     }}
                   >
                     <div className="flex items-start justify-between">
                       <div className="min-w-0 flex-1">
-                        <b className="text-sm font-bold block truncate">{p.title}</b>
+                        <b className="text-sm font-bold block truncate">
+                          {p.title}
+                        </b>
                         <small className="text-xs text-muted-foreground block mt-0.5">
                           {p.kind === 'series'
                             ? `Web Series · ${p.episodes?.length ?? 0} eps`
@@ -745,7 +1030,10 @@ export default function Home() {
                           {p.draft}
                         </small>
                       </div>
-                      <ChevronRight size={18} className="text-muted-foreground shrink-0 mt-1" />
+                      <ChevronRight
+                        size={18}
+                        className="text-muted-foreground shrink-0 mt-1"
+                      />
                     </div>
                   </div>
                 ))}
@@ -754,33 +1042,68 @@ export default function Home() {
           ) : (
             <>
               {!scriptTypingFocus && (
-              <MobileProjectHeader
-                project={project}
-                rootProject={rootProject}
-                isSeries={isSeries}
-                currentView={view}
-                saved={saved}
-                cloudStatus={cloudStatus}
-                user={user}
-                onBackToProjects={() => setDashboard(true)}
-                onSelectView={setView}
-                onOpenEpisodeDialog={() => setEpisodeDialog(true)}
-                onDeleteProject={() => {
-                  if (window.confirm(`Delete project "${project.title}"?`)) {
-                    deleteProject(project.id);
-                    setDashboard(true);
-                  }
-                }}
-                onRetrySync={retrySync}
-              />
+                <MobileProjectHeader
+                  project={project}
+                  rootProject={rootProject}
+                  isSeries={isSeries}
+                  currentView={view}
+                  saved={saved}
+                  cloudStatus={cloudStatus}
+                  user={user}
+                  entitlements={entitlements}
+                  authBusy={authBusy}
+                  configured={configured}
+                  onSignIn={signIn}
+                  onSignOut={signOut}
+                  onBackToProjects={() => setDashboard(true)}
+                  onSelectView={setView}
+                  onOpenEpisodeDialog={() => setEpisodeDialog(true)}
+                  onDeleteProject={() => {
+                    if (window.confirm(`Delete project "${project.title}"?`)) {
+                      deleteProject(project.id);
+                      setDashboard(true);
+                    }
+                  }}
+                  onRetrySync={retrySync}
+                />
               )}
 
-              <div className="flex items-center justify-end gap-2 px-3 py-1">
-                <Button size="sm" variant="outline" onClick={()=>setCoWriterOpen(true)}>Co-Drafter</Button>
-                <Button size="sm" variant="ghost" onClick={()=>setAiSettingsOpen(true)}>Co-Drafter AI</Button>
-              </div>
               <div className="mobile-workspace-body">
-                {productionViews.includes(view) && <ProductionWorkspace key={project.id + view} project={project} view={view} onUpdate={update} userId={user?.uid} rootId={rootProject.id} onScene={id => { setSceneId(id); setView("Screenplay"); }} />}
+                {isViewLocked(view) ? (
+                  <div className="flex flex-col items-center justify-center p-8 text-center bg-card/20 border border-white/5 rounded-xl m-4">
+                    <Lock className="w-8 h-8 text-primary mb-3" />
+                    <h3 className="text-base font-bold text-white mb-1">
+                      {view} is Locked
+                    </h3>
+                    <p className="text-xs text-muted-foreground mb-4">
+                      Upgrade to Plus or AI Plus to unlock {view}.
+                    </p>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setUpgradeTargetFeature(view);
+                        setUpgradeModalOpen(true);
+                      }}
+                    >
+                      Upgrade Plan
+                    </Button>
+                  </div>
+                ) : (
+                  productionViews.includes(view) && (
+                    <ProductionWorkspace
+                      key={project.id + view}
+                      project={project}
+                      view={view}
+                      onUpdate={update}
+                      userId={user?.uid}
+                      rootId={rootProject.id}
+                      onScene={(id) => {
+                        setSceneId(id);
+                        setView('Screenplay');
+                      }}
+                    />
+                  )
+                )}
                 {view === 'Scene cards' && (
                   <MobileSceneCards
                     project={project}
@@ -792,7 +1115,9 @@ export default function Home() {
                     onAddScene={(act) => addScene(act)}
                     onAddAct={() => setAddAct(true)}
                     onShiftScene={(id, dir) => shiftScene(id, dir)}
-                    onDeleteScene={(id, heading) => askDelete('scene', id, heading)}
+                    onDeleteScene={(id, heading) =>
+                      askDelete('scene', id, heading)
+                    }
                     onDeleteAct={(act) => askDelete('act', act, act)}
                   />
                 )}
@@ -811,10 +1136,20 @@ export default function Home() {
                       onOpenSceneDetails={() => setInspect(true)}
                       isTypingFocus={scriptTypingFocus}
                       onTypingFocusChange={setScriptTypingFocus}
+                      onSelectionChange={setScreenplaySelection}
+                      onAskCoDrafter={openCoDrafterForSelection}
+                      onCoDrafterAction={launchMobileCoDrafterAction}
+                      clearSelectionNonce={clearSelectionNonce}
+                      onRegisterProposalActions={(actions) => {
+                        proposalActions.current = actions;
+                      }}
                     />
                   ) : (
                     <div className="p-8 text-center">
-                      <FileText size={32} className="mx-auto text-muted-foreground mb-2" />
+                      <FileText
+                        size={32}
+                        className="mx-auto text-muted-foreground mb-2"
+                      />
                       <b className="text-sm block">No scenes to write yet</b>
                       <p className="text-xs text-muted-foreground mt-1 mb-4">
                         Create your first scene to start writing the script.
@@ -837,7 +1172,9 @@ export default function Home() {
                     onRemoveImage={removeImageForPanel}
                     onUpdatePanel={updatePanel}
                     onAutoPlanScene={(s) => {
-                      const count = project.panels.filter((p) => p.sceneId === s.id).length;
+                      const count = project.panels.filter(
+                        (p) => p.sceneId === s.id,
+                      ).length;
                       setReplacePanels(count > 0);
                       setAutoPlanScene(s);
                     }}
@@ -878,7 +1215,9 @@ export default function Home() {
                         label="Runtime (sec)"
                         type="number"
                         value={project.targetRuntime}
-                        onChange={(v) => update((p) => ({ ...p, targetRuntime: Number(v) }))}
+                        onChange={(v) =>
+                          update((p) => ({ ...p, targetRuntime: Number(v) }))
+                        }
                       />
                     </div>
                     <Field
@@ -896,7 +1235,9 @@ export default function Home() {
                     <Field
                       label="Synopsis"
                       value={project.synopsis}
-                      onChange={(synopsis) => update((p) => ({ ...p, synopsis }))}
+                      onChange={(synopsis) =>
+                        update((p) => ({ ...p, synopsis }))
+                      }
                       multiline
                     />
                     <Field
@@ -917,7 +1258,9 @@ export default function Home() {
                       setSceneId(id);
                       setView('Screenplay');
                     }}
-                    onDeleteEntity={(kind, id, name) => askDelete(kind, id, name)}
+                    onDeleteEntity={(kind, id, name) =>
+                      askDelete(kind, id, name)
+                    }
                   />
                 )}
 
@@ -930,7 +1273,9 @@ export default function Home() {
                       setSceneId(id);
                       setView('Screenplay');
                     }}
-                    onDeleteEntity={(kind, id, name) => askDelete(kind, id, name)}
+                    onDeleteEntity={(kind, id, name) =>
+                      askDelete(kind, id, name)
+                    }
                   />
                 )}
 
@@ -956,10 +1301,30 @@ export default function Home() {
                     </div>
                     <div className="space-y-2.5">
                       {[
-                        { name: 'Screenplay PDF', kind: 'PDF', icon: FileText, desc: 'US Letter · Courier 12' },
-                        { name: 'Fountain Script', kind: 'Fountain', icon: FileText, desc: 'Plain-text screenplay standard' },
-                        { name: 'Shot List CSV', kind: 'Shot list', icon: ListVideo, desc: 'Spreadsheet of storyboard shots' },
-                        { name: 'Project Backup', kind: 'Backup', icon: Save, desc: 'Full JSON backup with scenes & images' },
+                        {
+                          name: 'Screenplay PDF',
+                          kind: 'PDF',
+                          icon: FileText,
+                          desc: 'US Letter · Courier 12',
+                        },
+                        {
+                          name: 'Fountain Script',
+                          kind: 'Fountain',
+                          icon: FileText,
+                          desc: 'Plain-text screenplay standard',
+                        },
+                        {
+                          name: 'Shot List CSV',
+                          kind: 'Shot list',
+                          icon: ListVideo,
+                          desc: 'Spreadsheet of storyboard shots',
+                        },
+                        {
+                          name: 'Project Backup',
+                          kind: 'Backup',
+                          icon: Save,
+                          desc: 'Full JSON backup with scenes & images',
+                        },
                       ].map(({ name, kind, icon: Icon, desc }) => (
                         <div
                           key={kind}
@@ -969,7 +1334,9 @@ export default function Home() {
                             <Icon size={20} className="text-muted-foreground" />
                             <div>
                               <b className="text-xs font-bold block">{name}</b>
-                              <small className="text-[11px] text-muted-foreground">{desc}</small>
+                              <small className="text-[11px] text-muted-foreground">
+                                {desc}
+                              </small>
                             </div>
                           </div>
                           <Button
@@ -994,7 +1361,9 @@ export default function Home() {
                       <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
                         {project.format} · {project.genre || 'Genre not set'}
                       </span>
-                      <h2 className="text-base font-bold mt-1">{project.title}</h2>
+                      <h2 className="text-base font-bold mt-1">
+                        {project.title}
+                      </h2>
                       <p className="text-xs text-muted-foreground mt-1">
                         {project.logline || 'No logline added yet.'}
                       </p>
@@ -1002,20 +1371,36 @@ export default function Home() {
 
                     <div className="grid grid-cols-2 gap-2.5">
                       <div className="p-3 rounded-xl border border-border bg-card text-center">
-                        <b className="text-lg font-bold font-mono block">{project.scenes.length}</b>
-                        <span className="text-xs text-muted-foreground">Scenes</span>
+                        <b className="text-lg font-bold font-mono block">
+                          {project.scenes.length}
+                        </b>
+                        <span className="text-xs text-muted-foreground">
+                          Scenes
+                        </span>
                       </div>
                       <div className="p-3 rounded-xl border border-border bg-card text-center">
-                        <b className="text-lg font-bold font-mono block">{time(total)}</b>
-                        <span className="text-xs text-muted-foreground">Est. Runtime</span>
+                        <b className="text-lg font-bold font-mono block">
+                          {time(total)}
+                        </b>
+                        <span className="text-xs text-muted-foreground">
+                          Est. Runtime
+                        </span>
                       </div>
                       <div className="p-3 rounded-xl border border-border bg-card text-center">
-                        <b className="text-lg font-bold font-mono block">{project.characters.length}</b>
-                        <span className="text-xs text-muted-foreground">Characters</span>
+                        <b className="text-lg font-bold font-mono block">
+                          {project.characters.length}
+                        </b>
+                        <span className="text-xs text-muted-foreground">
+                          Characters
+                        </span>
                       </div>
                       <div className="p-3 rounded-xl border border-border bg-card text-center">
-                        <b className="text-lg font-bold font-mono block">{project.panels.length}</b>
-                        <span className="text-xs text-muted-foreground">Storyboards</span>
+                        <b className="text-lg font-bold font-mono block">
+                          {project.panels.length}
+                        </b>
+                        <span className="text-xs text-muted-foreground">
+                          Storyboards
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -1037,10 +1422,16 @@ export default function Home() {
                             </span>
                             <b className="text-sm font-bold block">{e.title}</b>
                             <small className="text-xs text-muted-foreground">
-                              {e.scenes.length} scenes · {time(e.scenes.reduce((n, s) => n + s.duration, 0))}
+                              {e.scenes.length} scenes ·{' '}
+                              {time(
+                                e.scenes.reduce((n, s) => n + s.duration, 0),
+                              )}
                             </small>
                           </div>
-                          <ChevronRight size={18} className="text-muted-foreground" />
+                          <ChevronRight
+                            size={18}
+                            className="text-muted-foreground"
+                          />
                         </div>
                       ))}
                     </div>
@@ -1055,16 +1446,29 @@ export default function Home() {
                 )}
               </div>
 
+              {!scriptTypingFocus && !coWriterOpen && (
+                <button
+                  type="button"
+                  className={`mobile-codraft-fab${view === 'Screenplay' ? ' screenplay' : ''}`}
+                  onClick={() => setCoWriterOpen(true)}
+                  aria-label="Open Co-Drafter"
+                  title="Open Co-Drafter"
+                >
+                  <Sparkles size={view === 'Screenplay' ? 19 : 17} />
+                  <span>Co-Drafter</span>
+                </button>
+              )}
+
               {!scriptTypingFocus && (
-              <MobileBottomNav
-                currentView={view}
-                onSelectView={setView}
-                project={project}
-                cloudStatus={cloudStatus}
-                saved={saved}
-                user={user}
-                onOpenDashboard={() => setDashboard(true)}
-              />
+                <MobileBottomNav
+                  currentView={view}
+                  onSelectView={setView}
+                  project={project}
+                  cloudStatus={cloudStatus}
+                  saved={saved}
+                  user={user}
+                  onOpenDashboard={() => setDashboard(true)}
+                />
               )}
             </>
           )}
@@ -1073,1422 +1477,1822 @@ export default function Home() {
         <SidebarProvider
           style={{ '--sidebar-width': '300px' } as React.CSSProperties}
         >
-      <Sidebar>
-        <SidebarHeader>
-          <button className="brand" onClick={() => setDashboard(true)}>
-            <Clapperboard /> draft-it <b>PRO</b>
-          </button>
-          <button className="project-picker" onClick={() => setDashboard(true)}>
-            <span className="project-icon">{rootProject.title[0]}</span>
-            <span>
-              {rootProject.title}
-              <small>{isSeries ? 'Web series' : rootProject.format}</small>
-            </span>
-            <ChevronRight size={16} />
-          </button>
-          {isSeries && (
-            <div className="episode-picker">
-              <span>EPISODE WORKSPACE</span>
-              <DropdownMenu>
-                <DropdownMenuTrigger render={<Button variant="outline" />}>
-                  {activeEpisode
-                    ? episodeLabel(activeEpisode) + ' · ' + activeEpisode.title
-                    : 'Select episode'}
-                  <ChevronRight size={14} />
-                </DropdownMenuTrigger>
-                <DropdownMenuContent>
-                  {rootProject.episodes?.map((e) => (
-                    <DropdownMenuItem
-                      key={e.id}
-                      onClick={() => selectEpisode(e.id)}
-                    >
-                      {episodeLabel(e)} · {e.title}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          )}
-        </SidebarHeader>
-        <SidebarContent>
-          <p className="nav-label">PROJECT WORKSPACE</p>
-          <SidebarMenu>
-            {isSeries && (
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  isActive={!dashboard && view === 'Series overview'}
-                  onClick={() => {
-                    setView('Series overview');
-                    setDashboard(false);
-                  }}
-                >
-                  <Clapperboard />
-                  <span>Series overview</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            )}
-            {(isSeries && !activeEpisode ? [] : nav).map(([n, I]) => (
-              <SidebarMenuItem key={n}>
-                {workspaceGroups.some(g => g.views[0] === n) && <p className="prod-nav-heading">{workspaceGroups.find(g => g.views[0] === n)?.name}</p>}
-                <SidebarMenuButton
-                  isActive={!dashboard && view === n}
-                  onClick={() => {
-                    setView(n);
-                    setDashboard(false);
-                    setEntityId('');
-                  }}
-                >
-                  <I />
-                  <span>
-                    {isSeries && n === 'Overview'
-                      ? 'Episode overview'
-                      : isSeries && n === 'Story'
-                        ? 'Episode story'
-                        : n}
-                  </span>
-                  {n === 'Scene cards' && (
-                    <span className="nav-count">
-                      {(isSeries ? activeEpisode : project)?.scenes.length}
-                    </span>
-                  )}
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            ))}
-          </SidebarMenu>
-        </SidebarContent>
-        <SidebarFooter>
-          <div className="local-label">
-            <span />
-            {user ? 'Firebase connected' : 'Local workspace'}
-          </div>
-          <div className="account-panel">
-            {user ? (
-              <>
-                <div className="profile ">
-                  <span className="w-10 h-10 rounded-full bg-slate-200 text-white  flex items-center justify-center">
-                    {(user.displayName || user.email || 'U')
-                      .slice(0, 2)
-                      .toUpperCase()}
-                  </span>
-                  <div>
-                    {user.displayName || 'Your account'}
-                    <small>{user.email}</small>
-                  </div>
-                </div>
-                <button onClick={signOut} disabled={authBusy}>
-                  Sign out
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  className="google-login"
-                  onClick={signIn}
-                  disabled={authBusy || !configured}
-                >
-                  {authBusy ? 'Signing in…' : 'Sign in with Google'}
-                </button>
-                <small>
-                  {configured
-                    ? 'Sign in to sync this local workspace.'
-                    : 'Add Firebase config to .env to enable sign-in.'}
-                </small>
-              </>
-            )}
-          </div>
-        </SidebarFooter>
-      </Sidebar>
-      <main className={`main${coWriterOpen && view === 'Screenplay' ? ' co-drafter-open' : ''}`}>
-        <header className="app-header">
-          <div>
-            <SidebarTrigger />
-            <button onClick={() => setDashboard(true)}>Projects</button>
-            <ChevronRight size={14} />
-            <b>
-              {dashboard
-                ? 'All projects'
-                : isSeries && view !== 'Series overview'
-                  ? rootProject.title +
-                    ' / ' +
-                    episodeLabel(project) +
-                    ' · ' +
-                    project.title
-                  : project.title}
-            </b>
-          </div>
-          <div>
-            <span className="saved">
-              <Check size={14} />
-              {saved}
-              {user ? ' · ' + cloudStatus : ''}
-            </span>
-            <span className="draft">{project.draft}</span>
-            <button
-              aria-label="Co-Drafter"
-              title="Open Co-Drafter"
-              onClick={() => setCoWriterOpen((o) => !o)}
-              style={{ display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 600, fontSize: '13px' }}
-            >
-              <Wand2 size={15} />
-              Co-Drafter
-            </button>
-            <button
-              aria-label="Co-Drafter AI Settings"
-              title="Co-Drafter AI Settings"
-              onClick={() => setAiSettingsOpen(true)}
-            >
-              <Settings size={16} />
-            </button>
-            <button
-              aria-label="Open exports"
-              onClick={() => {
-                setDashboard(false);
-                setView('Export');
-              }}
-            >
-              <Download size={16} />
-            </button>
-          </div>
-        </header>
-        {syncError && (
-          <div className="sync-error" role="status">
-            <span>{syncError}</span>
-            {user && <button onClick={retrySync}>Retry sync</button>}
-          </div>
-        )}
-        <section className="workspace">
-          <div className="eyebrow">
-            {dashboard
-              ? 'YOUR FILMMAKING WORKSPACE'
-              : project.title +
-                ' / ' +
-                (view === 'Scene cards'
-                  ? 'STORY DEVELOPMENT'
-                  : view.toUpperCase())}
-          </div>
-          <div className="title-row">
-            <div>
-              <h1>{pageTitle}</h1>
-              <p>
-                {dashboard
-                  ? 'A new idea is always the beginning of something.'
-                  : descriptions[view]}
-              </p>
-            </div>
-            <div className="title-actions">
-              {!dashboard &&
-                view !== 'Export' &&
-                importTabs.includes(view as ImportTab) && (
-                  <ImportWorkspace
-                    key={project.id + view}
-                    tab={view as ImportTab}
-                    project={project}
-                    scope={
-                      isSeries
-                        ? rootProject.title +
-                          ' / ' +
-                          episodeLabel(project) +
+          <Sidebar>
+            <SidebarHeader>
+              <button className="brand" onClick={() => setDashboard(true)}>
+                <Clapperboard /> draft-it <b>PRO</b>
+              </button>
+              <button
+                className="project-picker"
+                onClick={() => setDashboard(true)}
+              >
+                <span className="project-icon">{rootProject.title[0]}</span>
+                <span>
+                  {rootProject.title}
+                  <small>{isSeries ? 'Web series' : rootProject.format}</small>
+                </span>
+                <ChevronRight size={16} />
+              </button>
+              {isSeries && (
+                <div className="episode-picker">
+                  <span>EPISODE WORKSPACE</span>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger render={<Button variant="outline" />}>
+                      {activeEpisode
+                        ? episodeLabel(activeEpisode) +
                           ' · ' +
-                          project.title
-                        : project.title
-                    }
-                    onImport={async (plan) => {
-                      if (plan.fileCopies?.length) {
-                        if (!user) throw Error("Sign in to the original account to restore attachments.");
-                        await copyProductionFiles(user.uid, plan.fileCopies);
-                      }
-                      if (plan.newProject) {
-                        setProjects((all) => [plan.project, ...all]);
-                        setProjectId(plan.project.id);
-                        setEpisodeId(plan.project.episodes?.[0]?.id ?? '');
-                        setView(
-                          plan.project.kind === 'series'
-                            ? 'Series overview'
-                            : 'Overview',
-                        );
-                      } else {
-                        update(() => plan.project);
-                      }
-                      setSceneId('');
-                      setInspect(false);
-                      setEntityId('');
-                      setPanelEdit(null);
-                      setNotice(
-                        plan.newProject
-                          ? 'Imported as a new project.'
-                          : 'Import complete. Connected workspaces updated.',
-                      );
-                    }}
-                  />
-                )}
-              {dashboard ? (
-                <button className="primary" onClick={() => setCreate(true)}>
-                  <Plus size={16} />
-                  New project
-                </button>
-              ) : view === 'Series overview' ? (
-                <button
-                  className="primary"
-                  onClick={() => setEpisodeDialog(true)}
-                >
-                  <Plus size={16} />
-                  Add episode
-                </button>
-              ) : view === 'Scene cards' ? (
-                <>
-                  <Button variant="outline" onClick={() => setAddAct(true)}>
-                    Add column
-                  </Button>
-                  <button className="primary" onClick={() => addScene()}>
-                    <Plus size={16} />
-                    Add scene
-                  </button>
-                </>
-              ) : view === 'Screenplay' ? (
-                <button
-                  className="primary"
-                  onClick={() => exportFile('PDF')}
-                  disabled={exporting}
-                >
-                  <Download size={16} />
-                  {exporting ? 'Preparing…' : 'Export PDF'}
-                </button>
-              ) : view === 'Legacy Storyboard' ? (
-                <button
-                  className="primary"
-                  disabled={!scene}
-                  onClick={addPanel}
-                >
-                  <Plus size={16} />
-                  Add panel
-                </button>
-              ) : view === 'Legacy Characters' || view === 'Legacy Locations' ? (
-                <button
-                  className="primary"
-                  onClick={() => {
-                    setTitle('');
-                    setNewEntity(true);
-                  }}
-                >
-                  <Plus size={16} />
-                  Add {view === 'Legacy Characters' ? 'character' : 'location'}
-                </button>
-              ) : (
-                <button
-                  className="primary"
-                  onClick={() => setView('Screenplay')}
-                >
-                  Open screenplay <ArrowUpRight size={16} />
-                </button>
+                          activeEpisode.title
+                        : 'Select episode'}
+                      <ChevronRight size={14} />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent>
+                      {rootProject.episodes?.map((e) => (
+                        <DropdownMenuItem
+                          key={e.id}
+                          onClick={() => selectEpisode(e.id)}
+                        >
+                          {episodeLabel(e)} · {e.title}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
               )}
-            </div>
-          </div>
-          {dashboard ? (
-            <div className="projects-grid">
-              {projects.map((p, i) => (
-                <div
-                  className="project-card"
-                  key={p.id}
-                  onClick={() => {
-                    setProjectId(p.id);
-                    setSceneId('');
-                    setView(
-                      p.kind === 'series' ? 'Series overview' : 'Scene cards',
-                    );
-                    setEpisodeId(p.episodes?.[0]?.id ?? '');
-                    setDashboard(false);
-                  }}
-                  role="button"
-                  tabIndex={0}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      setProjectId(p.id);
-                      setSceneId('');
-                      setView(
-                        p.kind === 'series' ? 'Series overview' : 'Scene cards',
-                      );
-                      setEpisodeId(p.episodes?.[0]?.id ?? '');
-                      setDashboard(false);
-                    }
-                  }}
-                >
-                  <div className={'project-cover cover' + (i % 3)}>
-                    <span>{p.format}</span>
-                    <h2>{p.title}</h2>
-                    <Clapperboard size={30} />
-                  </div>
-                  <div className="project-info">
-                    <div className="project-info-header">
-                      <h3>
-                        {p.title}
-                        <ArrowUpRight size={17} />
-                      </h3>
-                      {projects.length > 1 && (
+            </SidebarHeader>
+            <SidebarContent>
+              <p className="nav-label">PROJECT WORKSPACE</p>
+              <SidebarMenu>
+                {isSeries && (
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      isActive={!dashboard && view === 'Series overview'}
+                      onClick={() => {
+                        setView('Series overview');
+                        setDashboard(false);
+                      }}
+                    >
+                      <Clapperboard />
+                      <span>Series overview</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                )}
+                {(isSeries && !activeEpisode ? [] : nav).map(([n, I]) => (
+                  <SidebarMenuItem key={n}>
+                    {workspaceGroups.some((g) => g.views[0] === n) && (
+                      <p className="prod-nav-heading">
+                        {workspaceGroups.find((g) => g.views[0] === n)?.name}
+                      </p>
+                    )}
+                    <SidebarMenuButton
+                      isActive={!dashboard && view === n}
+                      onClick={() => {
+                        if (isViewLocked(n)) {
+                          setUpgradeTargetFeature(
+                            isSeries && n === 'Overview'
+                              ? 'Episode overview'
+                              : isSeries && n === 'Story'
+                                ? 'Episode story'
+                                : n,
+                          );
+                          setUpgradeModalOpen(true);
+                          return;
+                        }
+                        setView(n);
+                        setDashboard(false);
+                        setEntityId('');
+                      }}
+                    >
+                      <I />
+                      <span>
+                        {isSeries && n === 'Overview'
+                          ? 'Episode overview'
+                          : isSeries && n === 'Story'
+                            ? 'Episode story'
+                            : n}
+                      </span>
+                      {isViewLocked(n) ? (
+                        <Lock className="w-3.5 h-3.5 text-muted-foreground/60 ml-auto shrink-0" />
+                      ) : (
+                        n === 'Scene cards' && (
+                          <span className="nav-count">
+                            {
+                              (isSeries ? activeEpisode : project)?.scenes
+                                .length
+                            }
+                          </span>
+                        )
+                      )}
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarContent>
+            <SidebarFooter>
+              <div className="local-label">
+                <span />
+                {user ? 'Firebase connected' : 'Local workspace'}
+              </div>
+              <div className="account-panel">
+                {user ? (
+                  <>
+                    <div className="profile ">
+                      <span className="w-10 h-10 rounded-full bg-slate-200 text-white flex items-center justify-center">
+                        {(user.displayName || user.email || 'U')
+                          .slice(0, 2)
+                          .toUpperCase()}
+                      </span>
+                      <div>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span>{user.displayName || 'Your account'}</span>
+                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-white/10 text-muted-foreground uppercase font-semibold">
+                            {entitlements.planDisplayName}
+                          </span>
+                          {isAdmin && (
+                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-orange-500/20 text-orange-400 border border-orange-500/30 uppercase font-semibold flex items-center gap-0.5">
+                              <Shield className="w-2.5 h-2.5" /> Admin
+                            </span>
+                          )}
+                        </div>
+                        <small>{user.email}</small>
+                      </div>
+                    </div>
+
+                    {/* AI Credit progress bar or Upgrade prompt */}
+                    {aiCreditStatus.hasHostedAi ? (
+                      <div className="w-full bg-white/5 border border-white/10 rounded-lg p-2.5 my-2 text-xs">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-muted-foreground font-medium flex items-center gap-1">
+                            <Sparkles className="w-3 h-3 text-primary" /> AI
+                            credits
+                          </span>
+                          <span className="font-semibold text-white">
+                            {aiCreditStatus.remainingPercent}% remaining
+                          </span>
+                        </div>
+                        <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden mb-1.5">
+                          <div
+                            className="h-full bg-primary rounded-full transition-all"
+                            style={{
+                              width: `${aiCreditStatus.remainingPercent}%`,
+                            }}
+                          />
+                        </div>
+                        {aiCreditStatus.nextResetDate && (
+                          <div className="text-[10px] text-muted-foreground/80">
+                            Next reset:{' '}
+                            {new Date(
+                              aiCreditStatus.nextResetDate,
+                            ).toLocaleDateString('en-GB', {
+                              day: 'numeric',
+                              month: 'short',
+                              year: 'numeric',
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="w-full my-2">
                         <button
                           type="button"
-                          className="delete-project-btn"
-                          title="Delete project"
-                          aria-label={`Delete ${p.title}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (
-                              window.confirm(
-                                `Are you sure you want to delete "${p.title}"?`,
-                              )
-                            ) {
-                              deleteProject(p.id);
-                            }
+                          onClick={() => {
+                            setUpgradeTargetFeature('');
+                            setUpgradeModalOpen(true);
                           }}
+                          className="w-full flex items-center justify-between text-xs px-2.5 py-1.5 bg-gradient-to-r from-orange-500/10 to-primary/10 border border-primary/20 rounded-md text-slate-200 hover:text-white hover:border-primary/40 transition-colors cursor-pointer"
                         >
-                          <Trash2 size={15} />
-                        </button>
-                      )}
-                    </div>
-                    <p>
-                      {p.kind === 'series'
-                        ? 'Web series · ' +
-                          (p.episodes?.length ?? 0) +
-                          ' episodes'
-                        : p.format + ' · ' + p.scenes.length + ' scenes'}{' '}
-                      · {p.draft}
-                    </p>
-                    <small>
-                      Edited {new Date(p.updatedAt).toLocaleDateString()}
-                    </small>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <>
-              {view !== 'Series overview' && (
-                <div className="stats">
-                  <span>
-                    <b>{project.scenes.length}</b> scenes
-                  </span>
-                  <span>
-                    <b>{time(total)}</b> est. runtime
-                  </span>
-                  <span>
-                    <b>{project.characters.length}</b> characters
-                  </span>
-                  <span className="sync">
-                    <span /> Connected to screenplay
-                  </span>
-                </div>
-              )}
-              {view === 'Scene cards' && (
-                <>
-                  <div
-                    className="board"
-                    style={{
-                      gridTemplateColumns: `repeat(${project.acts.length},minmax(250px,1fr))`,
-                    }}
-                  >
-                    {project.acts.map((act, i) => (
-                      <section
-                        className="act"
-                        key={act}
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={(e) => {
-                          e.preventDefault();
-                          if (drag) reorder(drag, act);
-                          setDrag('');
-                        }}
-                      >
-                        <div className="act-title">
-                          <span className={'dot d' + i} />
-                          <h2>{act}</h2>
-                          <span>
-                            {project.scenes.filter((s) => s.act === act).length}
+                          <span className="flex items-center gap-1.5 text-[11px] font-medium">
+                            <Sparkles className="w-3 h-3 text-primary" />{' '}
+                            Upgrade Plan
                           </span>
-                          <button
-                            aria-label={'Add scene to ' + act}
-                            onClick={() => addScene(act)}
-                          >
-                            <Plus size={16} />
-                          </button>
-                        </div>
-                        <button
-                          className="delete-column"
-                          disabled={project.acts.length <= 1}
-                          title={
-                            project.acts.length <= 1
-                              ? 'Keep at least one column'
-                              : 'Delete column and its scenes'
-                          }
-                          onClick={() => askDelete('act', act, act)}
-                        >
-                          <Trash2 size={13} />
-                          Delete column
-                        </button>
-                        <p className="act-sub">
-                          {[
-                            'The things we don’t say',
-                            'A thousand unsent thoughts',
-                            'Some words find their way',
-                          ][i] ?? 'A new chapter in your story'}
-                        </p>
-                        {project.scenes
-                          .filter((s) => s.act === act)
-                          .map((s) => {
-                            const number =
-                              project.scenes.findIndex((a) => a.id === s.id) +
-                              1;
-                            return (
-                              <article
-                                className={
-                                  'scene-card emotion-card ' +
-                                  (drag === s.id ? 'dragging' : '')
-                                }
-                                style={
-                                  s.colour
-                                    ? {
-                                        borderTopColor: s.colour,
-                                        backgroundImage:
-                                          'linear-gradient(' +
-                                          s.colour +
-                                          '14, ' +
-                                          s.colour +
-                                          '04)',
-                                      }
-                                    : undefined
-                                }
-                                key={s.id}
-                                draggable
-                                onDragStart={(e) => {
-                                  setDrag(s.id);
-                                  e.dataTransfer.setData('text/plain', s.id);
-                                }}
-                                onDragEnd={() => setDrag('')}
-                                onDragOver={(e) => e.preventDefault()}
-                                onDrop={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  if (drag && drag !== s.id)
-                                    reorder(drag, act, s.id);
-                                  setDrag('');
-                                }}
-                              >
-                                <button
-                                  className="card-open"
-                                  onClick={() => openScene(s.id)}
-                                >
-                                  <div className="card-meta">
-                                    <span>SCENE {pad(number)}</span>
-                                    <span className={'status ' + s.status}>
-                                      {s.status}
-                                    </span>
-                                  </div>
-                                  {s.emotion && (
-                                    <span className="emotion-label">
-                                      <span
-                                        style={{
-                                          background: s.colour || '#a6afb9',
-                                        }}
-                                      />
-                                      {s.emotion}
-                                    </span>
-                                  )}
-                                  <h3>{s.heading}</h3>
-                                  <p>
-                                    {s.summary ||
-                                      'Add a summary to shape this scene.'}
-                                  </p>
-                                </button>
-                                <div className="card-bottom">
-                                  <span>
-                                    {s.characterIds
-                                      .map(
-                                        (id) =>
-                                          project.characters.find(
-                                            (c) => c.id === id,
-                                          )?.name,
-                                      )
-                                      .join(' · ') || 'No dialogue yet'}
-                                  </span>
-                                  <span>
-                                    <Clock size={12} /> {s.duration} sec
-                                  </span>
-                                </div>
-                                <div className="card-tools">
-                                  <GripVertical size={13} />
-                                  <button
-                                    className="delete-element"
-                                    aria-label={'Delete scene ' + number}
-                                    title="Delete scene"
-                                    onClick={() =>
-                                      askDelete('scene', s.id, s.heading)
-                                    }
-                                  >
-                                    <Trash2 size={15} />
-                                  </button>
-                                  <button
-                                    aria-label={
-                                      'Set emotion colour for scene ' + number
-                                    }
-                                    title="Emotion colour"
-                                    onClick={() => openScene(s.id)}
-                                  >
-                                    <Palette size={15} />
-                                  </button>
-                                  <button
-                                    aria-label={'Move scene ' + number + ' up'}
-                                    disabled={number === 1}
-                                    onClick={() => shiftScene(s.id, -1)}
-                                  >
-                                    <ArrowUp size={13} />
-                                  </button>
-                                  <button
-                                    aria-label={
-                                      'Move scene ' + number + ' down'
-                                    }
-                                    disabled={number === project.scenes.length}
-                                    onClick={() => shiftScene(s.id, 1)}
-                                  >
-                                    <ArrowDown size={13} />
-                                  </button>
-                                </div>
-                              </article>
-                            );
-                          })}
-                        <button
-                          className="add-card"
-                          onClick={() => addScene(act)}
-                        >
-                          <Plus size={14} /> Add scene
-                        </button>
-                      </section>
-                    ))}
-                  </div>
-                  <p className="board-hint">
-                    Drag to reorder your story. Screenplay scene numbers update
-                    automatically.
-                  </p>
-                </>
-              )}
-              {view === 'Series overview' && isSeries && (
-                <div className="series-workspace">
-                  <section className="form-panel">
-                    <div className="section-kicker">SERIES BIBLE</div>
-                    <Field
-                      label="Series title"
-                      value={rootProject.title}
-                      onChange={(title) => update((p) => ({ ...p, title }))}
-                    />
-                    <Field
-                      label="Series logline"
-                      value={rootProject.logline}
-                      onChange={(logline) => update((p) => ({ ...p, logline }))}
-                      multiline
-                    />
-                    <div className="two-fields">
-                      <Field
-                        label="Genre"
-                        value={rootProject.genre}
-                        onChange={(genre) => update((p) => ({ ...p, genre }))}
-                      />
-                      <Field
-                        label="Theme"
-                        value={rootProject.theme}
-                        onChange={(theme) => update((p) => ({ ...p, theme }))}
-                      />
-                    </div>
-                    <Field
-                      label="Series arc"
-                      value={rootProject.synopsis}
-                      onChange={(synopsis) =>
-                        update((p) => ({ ...p, synopsis }))
-                      }
-                      multiline
-                    />
-                  </section>
-                  <section className="series-episodes">
-                    <div className="scene-section-title">
-                      <div>
-                        <h2>Seasons & episodes</h2>
-                        <p>
-                          {rootProject.episodes?.length} episodes ·{' '}
-                          {rootProject.episodes?.reduce(
-                            (n, e) => n + e.scenes.length,
-                            0,
-                          )}{' '}
-                          scenes across the series
-                        </p>
-                      </div>
-                      <button
-                        className="primary"
-                        onClick={() => setEpisodeDialog(true)}
-                      >
-                        <Plus size={16} />
-                        Add episode
-                      </button>
-                    </div>
-                    {Array.from(
-                      new Set(
-                        rootProject.episodes?.map((e) => e.seasonNumber ?? 1),
-                      ),
-                    )
-                      .sort((a, b) => a - b)
-                      .map((seasonNumber) => (
-                        <div key={seasonNumber} className="season-group">
-                          <h3>Season {pad(seasonNumber)}</h3>
-                          {rootProject.episodes
-                            ?.filter((e) => e.seasonNumber === seasonNumber)
-                            .sort(
-                              (a, b) =>
-                                (a.episodeNumber ?? 0) - (b.episodeNumber ?? 0),
-                            )
-                            .map((e) => (
-                              <div key={e.id} className="episode-with-delete">
-                                <button
-                                  className="episode-row"
-                                  onClick={() => selectEpisode(e.id)}
-                                >
-                                  <span className="episode-code">
-                                    {episodeLabel(e)}
-                                  </span>
-                                  <span>
-                                    <b>{e.title}</b>
-                                    <small>
-                                      {e.scenes.length} scenes ·{' '}
-                                      {time(
-                                        e.scenes.reduce(
-                                          (n, s) => n + s.duration,
-                                          0,
-                                        ),
-                                      )}{' '}
-                                      · {e.draft}
-                                    </small>
-                                  </span>
-                                  <ArrowUpRight size={18} />
-                                </button>
-                                <button
-                                  className="delete-element episode-delete"
-                                  aria-label={
-                                    'Delete ' + episodeLabel(e) + ' ' + e.title
-                                  }
-                                  onClick={() =>
-                                    askDelete(
-                                      'episode',
-                                      e.id,
-                                      episodeLabel(e) + ' · ' + e.title,
-                                    )
-                                  }
-                                >
-                                  <Trash2 size={17} />
-                                </button>
-                              </div>
-                            ))}
-                        </div>
-                      ))}
-                  </section>
-                </div>
-              )}
-              {productionViews.includes(view) && <ProductionWorkspace key={project.id + view} project={project} view={view} onUpdate={update} userId={user?.uid} rootId={rootProject.id} onScene={id => { setSceneId(id); setView('Screenplay'); }} />}
-              {view === 'Overview' && (
-                <div className="project-overview">
-                  <section className="overview-summary">
-                    <div>
-                      <span className="section-kicker">
-                        {project.format} · {project.genre || 'Genre not set'}
-                      </span>
-                      <h2>{project.title}</h2>
-                      <p>
-                        {project.logline ||
-                          'Your story starts with an idea. Add a logline in Story to give the project a direction.'}
-                      </p>
-                      <button
-                        className="overview-link"
-                        onClick={() => setView('Story')}
-                      >
-                        Develop the story <ArrowUpRight size={16} />
-                      </button>
-                    </div>
-                    <div className="overview-draft">
-                      <Field
-                        label="Current draft"
-                        value={project.draft}
-                        onChange={(draft) => update((p) => ({ ...p, draft }))}
-                      />
-                      <p>
-                        Target runtime <b>{time(project.targetRuntime)}</b>
-                      </p>
-                      <p>
-                        Locations <b>{project.locations.length}</b>
-                      </p>
-                    </div>
-                  </section>
-                  <div className="overview-progress-grid">
-                    <section className="overview-progress-card">
-                      <FileText size={22} />
-                      <h2>Screenplay status</h2>
-                      <strong>
-                        {
-                          project.scenes.filter(
-                            (s) =>
-                              s.status === 'revised' || s.status === 'locked',
-                          ).length
-                        }
-                        <span>
-                          {' '}
-                          / {project.scenes.length} scenes revised or locked
-                        </span>
-                      </strong>
-                      <Progress
-                        aria-label="Scenes revised or locked"
-                        value={
-                          project.scenes.length
-                            ? (project.scenes.filter(
-                                (s) =>
-                                  s.status === 'revised' ||
-                                  s.status === 'locked',
-                              ).length /
-                                project.scenes.length) *
-                              100
-                            : 0
-                        }
-                      />
-                      <div className="overview-statuses">
-                        {['outline', 'draft', 'revised', 'locked'].map(
-                          (status) => (
-                            <span key={status}>
-                              <b>
-                                {
-                                  project.scenes.filter(
-                                    (s) => s.status === status,
-                                  ).length
-                                }
-                              </b>{' '}
-                              {status}
-                            </span>
-                          ),
-                        )}
-                      </div>
-                      <button
-                        className="overview-link"
-                        onClick={() => setView('Scene cards')}
-                      >
-                        Review scenes <ArrowUpRight size={15} />
-                      </button>
-                    </section>
-                    <section className="overview-progress-card">
-                      <Images size={22} />
-                      <h2>Visual planning</h2>
-                      <strong>
-                        {
-                          project.scenes.filter((s) =>
-                            project.panels.some((p) => p.sceneId === s.id),
-                          ).length
-                        }
-                        <span>
-                          {' '}
-                          / {project.scenes.length} scenes with panels
-                        </span>
-                      </strong>
-                      <Progress
-                        aria-label="Scenes with storyboard panels"
-                        value={
-                          project.scenes.length
-                            ? (project.scenes.filter((s) =>
-                                project.panels.some((p) => p.sceneId === s.id),
-                              ).length /
-                                project.scenes.length) *
-                              100
-                            : 0
-                        }
-                      />
-                      <p>
-                        {project.panels.length} panels ·{' '}
-                        {
-                          project.panels.filter(
-                            (p) =>
-                              p.status === 'Ready' || p.status === 'Complete',
-                          ).length
-                        }{' '}
-                        shots ready or complete
-                      </p>
-                      <button
-                        className="overview-link"
-                        onClick={() => setView('Storyboard')}
-                      >
-                        Plan the frames <ArrowUpRight size={15} />
-                      </button>
-                    </section>
-                  </div>
-                  <section className="overview-workspaces">
-                    <h2>Continue your project</h2>
-                    <div>
-                      {[
-                        {
-                          name: 'Story',
-                          icon: BookOpen,
-                          text: 'Develop your premise, theme, and treatment.',
-                        },
-                        {
-                          name: 'Screenplay',
-                          icon: FileText,
-                          text: 'Pick up the script where your story needs you.',
-                        },
-                        {
-                          name: 'Shot list',
-                          icon: ListVideo,
-                          text: 'Review camera choices and shot readiness.',
-                        },
-                        {
-                          name: 'Export',
-                          icon: Download,
-                          text: 'Download your screenplay or a project backup.',
-                        },
-                      ].map(({ name, icon: Icon, text }) => (
-                        <button key={name} onClick={() => setView(name)}>
-                          <Icon size={20} />
-                          <span>
-                            <b>{name}</b>
-                            <small>{text}</small>
+                          <span className="text-[10px] text-primary font-semibold">
+                            Unlock PRO →
                           </span>
-                          <ChevronRight size={16} />
-                        </button>
-                      ))}
-                    </div>
-                  </section>
-                </div>
-              )}
-              {view === 'Story' && (
-                <div className="story-writing">
-                  <section className="form-panel">
-                    <div className="section-title-row">
-                      <div className="section-kicker">STORY FOUNDATION</div>
-                      <button
-                        className="delete-element"
-                        onClick={() => askDelete('story', '', project.title)}
-                      >
-                        <Trash2 size={14} />
-                        Clear story content
-                      </button>
-                    </div>
-                    <Field
-                      label="Title"
-                      value={project.title}
-                      onChange={(title) => update((p) => ({ ...p, title }))}
-                    />
-                    <Field
-                      label="Logline"
-                      value={project.logline}
-                      onChange={(logline) => update((p) => ({ ...p, logline }))}
-                      multiline
-                    />
-                    <div className="two-fields">
-                      <Field
-                        label="Genre"
-                        value={project.genre}
-                        onChange={(genre) => update((p) => ({ ...p, genre }))}
-                      />
-                      <Field
-                        label="Target runtime (seconds)"
-                        type="number"
-                        value={project.targetRuntime}
-                        onChange={(v) =>
-                          update((p) => ({ ...p, targetRuntime: Number(v) }))
-                        }
-                      />
-                    </div>
-                    {(
-                      [
-                        'premise',
-                        'theme',
-                        'synopsis',
-                        'treatment',
-                        'notes',
-                        'references',
-                      ] as const
-                    ).map((key) => (
-                      <Field
-                        key={key}
-                        label={key === 'notes' ? 'Writer’s notes' : key}
-                        value={project[key]}
-                        onChange={(v) => update((p) => ({ ...p, [key]: v }))}
-                        multiline
-                      />
-                    ))}
-                  </section>
-                </div>
-              )}
-              {view === 'Screenplay' &&
-                (scene ? (
-                  <div className="script-layout">
-                    <aside className="script-nav">
-                      <div className="section-kicker">
-                        SCENES{' '}
-                        <button
-                          aria-label="Add scene"
-                          onClick={() => addScene()}
-                        >
-                          <Plus size={14} />
                         </button>
                       </div>
-                      {project.acts.map((act) => (
-                        <div key={act}>
-                          <h3>{act}</h3>
-                          {project.scenes
-                            .filter((s) => s.act === act)
-                            .map((s) => (
-                              <button
-                                className={scene.id === s.id ? 'selected' : ''}
-                                key={s.id}
-                                onClick={() => setSceneId(s.id)}
-                              >
-                                <span>
-                                  {pad(project.scenes.indexOf(s) + 1)}
-                                </span>
-                                {s.heading
-                                  .replace(/^(INT.|EXT.) /, '')
-                                  .replace(' - NIGHT', '')}
-                              </button>
-                            ))}
-                        </div>
-                      ))}
-                      <button
-                        className="metadata-button"
-                        onClick={() => setInspect(true)}
+                    )}
+
+                    {/* Admin Dashboard Link if admin */}
+                    {isAdmin && (
+                      <Link
+                        href="/admin"
+                        className="w-full flex items-center justify-center gap-1.5 text-xs text-orange-400 bg-orange-500/10 border border-orange-500/20 hover:bg-orange-500/20 py-1.5 rounded-md mb-2 transition-colors font-medium"
                       >
-                        Scene details <ChevronRight size={14} />
-                      </button>
-                    </aside>
-                    <ScriptEditor
-                      key={scene.id}
-                      scene={scene}
-                      locations={project.locations.map((l) => l.name)}
-                      onChange={(blocks) => patchScene(scene.id, { blocks })}
-                    />
-                  </div>
-                ) : (
-                  <Empty
-                    icon={<FileText />}
-                    title="The first page is yours."
-                    text="Add a scene to begin writing."
-                    action={() => addScene()}
-                    label="Add first scene"
-                  />
-                ))}
-              {view === 'Legacy Storyboard' && (
-                <>
-                  <div className="scene-switcher">
-                    {project.scenes.map((s, i) => (
-                      <button
-                        className={scene?.id === s.id ? 'selected' : ''}
-                        key={s.id}
-                        onClick={() => setSceneId(s.id)}
-                      >
-                        Scene {pad(i + 1)}
-                      </button>
-                    ))}
-                  </div>
-                  {scene ? (
-                    <>
-                      <div className="scene-section-title">
-                        <h2>{scene.heading}</h2>
-                        <div className="scene-title-actions">
-                          <span>
-                            {
-                              project.panels.filter((p) => p.sceneId === scene.id)
-                                .length
-                            }{' '}
-                            panels
-                          </span>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="auto-plan-btn"
-                            onClick={() => {
-                              const existingCount = project.panels.filter((p) => p.sceneId === scene.id).length;
-                              setReplacePanels(existingCount > 0);
-                              setAutoPlanScene(scene);
-                            }}
-                          >
-                            <Sparkles size={14} /> Auto plan scene
-                          </Button>
-                        </div>
-                      </div>
-                      <div className="panels-grid">
-                        {project.panels
-                          .filter((p) => p.sceneId === scene.id)
-                          .map((p, i) => {
-                            const sceneHash = computeSceneContentHash(scene);
-                            const isOutdated = !!(p.sourceContentHash && p.sourceContentHash !== sceneHash);
-                            const shotLabel = pad(project.scenes.indexOf(scene) + 1) + String.fromCharCode(65 + (i % 26));
-                            return (
-                              <div className="panel-card-container" key={p.id}>
-                                <div
-                                  className="panel-card"
-                                  onClick={() => setPanelEdit({ ...p })}
-                                  role="button"
-                                  tabIndex={0}
-                                >
-                                  <div className="frame">
-                                    {p.image ? (
-                                      <img
-                                        alt={p.description || 'Storyboard frame'}
-                                        src={p.image}
-                                      />
-                                    ) : (
-                                      <div>
-                                        <ImagePlus size={30} />
-                                        <span>Add a storyboard image</span>
-                                      </div>
-                                    )}
-                                    <b>{shotLabel}</b>
-                                    {isOutdated && (
-                                      <span className="outdated-scene-badge" title="Screenplay scene has changed since this panel was planned">
-                                        ⚠ Scene changed
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div className="panel-body">
-                                    <h3>
-                                      {p.size}
-                                      <span>{p.duration}s</span>
-                                    </h3>
-                                    <p>{p.description || 'Describe this frame.'}</p>
-                                    <small>
-                                      {p.lens} · {p.movement}
-                                    </small>
-                                  </div>
-                                </div>
-                                <div className="panel-card-footer">
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="panel-prompt-btn"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setPromptModalPanel({ ...p });
-                                      setEditingCustomPrompt(false);
-                                      setCustomPromptDraft(p.customPrompt ?? p.generatedPrompt ?? '');
-                                    }}
-                                  >
-                                    <FileText size={12} /> Prompt
-                                  </Button>
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    className="panel-edit-btn"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setPanelEdit({ ...p });
-                                    }}
-                                  >
-                                    Edit
-                                  </Button>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        <button className="new-panel" onClick={addPanel}>
-                          <Plus size={26} />
-                          Add a panel
-                          <span>Upload a frame or plan the shot</span>
-                        </button>
-                      </div>
-                    </>
-                  ) : (
-                    <Empty
-                      icon={<Images />}
-                      title="Start with a scene."
-                      text="Storyboard panels connect to your screenplay scenes."
-                      label="Add scene"
-                      action={() => addScene()}
-                    />
-                  )}
-                </>
-              )}
-              {view === 'Legacy Shot list' && (
-                <div className="table-panel">
-                  <div className="table-caption">
-                    <span>
-                      {project.panels.length} shots · Linked to storyboard
-                      panels
-                    </span>
-                    <Button
-                      variant="outline"
-                      onClick={() => exportFile('Shot list')}
-                    >
-                      <Download size={14} />
-                      Export CSV
-                    </Button>
-                  </div>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        {[
-                          'Shot',
-                          'Scene',
-                          'Size',
-                          'Movement',
-                          'Lens',
-                          'Duration',
-                          'Status',
-                        ].map((x) => (
-                          <TableHead key={x}>{x}</TableHead>
-                        ))}
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {project.scenes.flatMap((s, i) =>
-                        project.panels
-                          .filter((p) => p.sceneId === s.id)
-                          .map((p, j) => (
-                            <TableRow key={p.id}>
-                              <TableCell>
-                                <button
-                                  className="shot-link"
-                                  onClick={() => setPanelEdit({ ...p })}
-                                >
-                                  {pad(i + 1) + String.fromCharCode(65 + j)}
-                                </button>
-                              </TableCell>
-                              <TableCell>{s.heading}</TableCell>
-                              <TableCell>{p.size}</TableCell>
-                              <TableCell>{p.movement}</TableCell>
-                              <TableCell>{p.lens}</TableCell>
-                              <TableCell>{p.duration}s</TableCell>
-                              <TableCell>
-                                <span className="status revised">
-                                  {p.status}
-                                </span>
-                              </TableCell>
-                            </TableRow>
-                          )),
-                      )}
-                    </TableBody>
-                  </Table>
-                  {!project.panels.length && (
-                    <Empty
-                      icon={<ListVideo />}
-                      title="Plan your first shot."
-                      text="Add storyboard panels to build your shot list."
-                      label="Open storyboard"
-                      action={() => setView('Storyboard')}
-                    />
-                  )}
-                </div>
-              )}
-              {(view === 'Legacy Characters' || view === 'Legacy Locations') && (
-                <div className="entities-grid">
-                  {(view === 'Legacy Characters'
-                    ? project.characters
-                    : project.locations
-                  ).map((e, i) => (
-                    <button
-                      className="entity-card"
-                      key={e.id}
-                      onClick={() => setEntityId(e.id)}
-                    >
-                      <div className={'entity-avatar av' + i}>
-                        {view === 'Legacy Characters' ? (
-                          e.name.slice(0, 1)
-                        ) : (
-                          <MapPin />
-                        )}
-                      </div>
-                      <span className="section-kicker">
-                        {view === 'Legacy Characters'
-                          ? (e as Person).role || 'CHARACTER'
-                          : 'LOCATION'}
-                      </span>
-                      <h2>{e.name}</h2>
-                      <p>
-                        {e.description ||
-                          'Add a description, details, and production notes.'}
-                      </p>
-                      <div className="entity-scenes">
-                        {
-                          project.scenes.filter((s) =>
-                            view === 'Legacy Characters'
-                              ? s.characterIds.includes(e.id)
-                              : s.locationId === e.id,
-                          ).length
-                        }{' '}
-                        scene appearances <ArrowUpRight size={15} />
-                      </div>
+                        <Shield className="w-3.5 h-3.5" /> Admin Dashboard
+                      </Link>
+                    )}
+
+                    <button onClick={signOut} disabled={authBusy}>
+                      Sign out
                     </button>
-                  ))}
-                  {!(
-                    view === 'Legacy Characters'
-                      ? project.characters
-                      : project.locations
-                  ).length && (
-                    <Empty
-                      icon={view === 'Legacy Characters' ? <Users /> : <MapPin />}
-                      title={
-                        'Build your ' +
-                        (view === 'Legacy Characters' ? 'cast.' : 'world.')
-                      }
-                      text="Add an entry here, or let screenplay elements create it automatically."
-                      label="Add entry"
-                      action={() => {
+                  </>
+                ) : (
+                  <>
+                    <button
+                      className="google-login"
+                      onClick={signIn}
+                      disabled={authBusy || !configured}
+                    >
+                      {authBusy ? 'Signing in…' : 'Sign in with Google'}
+                    </button>
+                    <small>
+                      {configured
+                        ? 'Sign in to sync this local workspace.'
+                        : 'Add Firebase config to .env to enable sign-in.'}
+                    </small>
+                  </>
+                )}
+              </div>
+            </SidebarFooter>
+          </Sidebar>
+          <main
+            className={`main${coWriterOpen && view === 'Screenplay' ? ' co-drafter-open' : ''}`}
+          >
+            <header className="app-header">
+              <div>
+                <SidebarTrigger />
+                <button onClick={() => setDashboard(true)}>Projects</button>
+                <ChevronRight size={14} />
+                <b>
+                  {dashboard
+                    ? 'All projects'
+                    : isSeries && view !== 'Series overview'
+                      ? rootProject.title +
+                        ' / ' +
+                        episodeLabel(project) +
+                        ' · ' +
+                        project.title
+                      : project.title}
+                </b>
+              </div>
+              <div>
+                <span className="saved">
+                  <Check size={14} />
+                  {saved}
+                  {user ? ' · ' + cloudStatus : ''}
+                </span>
+                <span className="draft">{project.draft}</span>
+                <button
+                  aria-label="Co-Drafter"
+                  title="Open Co-Drafter"
+                  onClick={() => setCoWriterOpen((o) => !o)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    fontWeight: 600,
+                    fontSize: '13px',
+                  }}
+                >
+                  <Wand2 size={15} />
+                  Co-Drafter
+                </button>
+                {canAccessByok && (
+                  <button
+                    aria-label="Co-Drafter AI Settings"
+                    title="Co-Drafter AI Settings (Admin Only)"
+                    onClick={() => setAiSettingsOpen(true)}
+                  >
+                    <Settings size={16} />
+                  </button>
+                )}
+                <button
+                  aria-label="Open exports"
+                  onClick={() => {
+                    setDashboard(false);
+                    setView('Export');
+                  }}
+                >
+                  <Download size={16} />
+                </button>
+              </div>
+            </header>
+            {syncError && (
+              <div className="sync-error" role="status">
+                <span>{syncError}</span>
+                {user && <button onClick={retrySync}>Retry sync</button>}
+              </div>
+            )}
+            <section className="workspace">
+              <div className="eyebrow">
+                {dashboard
+                  ? 'YOUR FILMMAKING WORKSPACE'
+                  : project.title +
+                    ' / ' +
+                    (view === 'Scene cards'
+                      ? 'STORY DEVELOPMENT'
+                      : view.toUpperCase())}
+              </div>
+              <div className="title-row">
+                <div>
+                  <h1>{pageTitle}</h1>
+                  <p>
+                    {dashboard
+                      ? 'A new idea is always the beginning of something.'
+                      : descriptions[view]}
+                  </p>
+                </div>
+                <div className="title-actions">
+                  {!dashboard &&
+                    view !== 'Export' &&
+                    importTabs.includes(view as ImportTab) && (
+                      <ImportWorkspace
+                        key={project.id + view}
+                        tab={view as ImportTab}
+                        project={project}
+                        scope={
+                          isSeries
+                            ? rootProject.title +
+                              ' / ' +
+                              episodeLabel(project) +
+                              ' · ' +
+                              project.title
+                            : project.title
+                        }
+                        onImport={async (plan) => {
+                          if (plan.fileCopies?.length) {
+                            if (!user)
+                              throw Error(
+                                'Sign in to the original account to restore attachments.',
+                              );
+                            await copyProductionFiles(
+                              user.uid,
+                              plan.fileCopies,
+                            );
+                          }
+                          if (plan.newProject) {
+                            setProjects((all) => [plan.project, ...all]);
+                            setProjectId(plan.project.id);
+                            setEpisodeId(plan.project.episodes?.[0]?.id ?? '');
+                            setView(
+                              plan.project.kind === 'series'
+                                ? 'Series overview'
+                                : 'Overview',
+                            );
+                          } else {
+                            update(() => plan.project);
+                          }
+                          setSceneId('');
+                          setInspect(false);
+                          setEntityId('');
+                          setPanelEdit(null);
+                          setNotice(
+                            plan.newProject
+                              ? 'Imported as a new project.'
+                              : 'Import complete. Connected workspaces updated.',
+                          );
+                        }}
+                      />
+                    )}
+                  {dashboard ? (
+                    <button className="primary" onClick={() => setCreate(true)}>
+                      <Plus size={16} />
+                      New project
+                    </button>
+                  ) : view === 'Series overview' ? (
+                    <button
+                      className="primary"
+                      onClick={() => setEpisodeDialog(true)}
+                    >
+                      <Plus size={16} />
+                      Add episode
+                    </button>
+                  ) : view === 'Scene cards' ? (
+                    <>
+                      <Button variant="outline" onClick={() => setAddAct(true)}>
+                        Add column
+                      </Button>
+                      <button className="primary" onClick={() => addScene()}>
+                        <Plus size={16} />
+                        Add scene
+                      </button>
+                    </>
+                  ) : view === 'Screenplay' ? (
+                    <button
+                      className="primary"
+                      onClick={() => exportFile('PDF')}
+                      disabled={exporting}
+                    >
+                      <Download size={16} />
+                      {exporting ? 'Preparing…' : 'Export PDF'}
+                    </button>
+                  ) : view === 'Legacy Storyboard' ? (
+                    <button
+                      className="primary"
+                      disabled={!scene}
+                      onClick={addPanel}
+                    >
+                      <Plus size={16} />
+                      Add panel
+                    </button>
+                  ) : view === 'Legacy Characters' ||
+                    view === 'Legacy Locations' ? (
+                    <button
+                      className="primary"
+                      onClick={() => {
                         setTitle('');
                         setNewEntity(true);
                       }}
-                    />
+                    >
+                      <Plus size={16} />
+                      Add{' '}
+                      {view === 'Legacy Characters' ? 'character' : 'location'}
+                    </button>
+                  ) : (
+                    <button
+                      className="primary"
+                      onClick={() => setView('Screenplay')}
+                    >
+                      Open screenplay <ArrowUpRight size={16} />
+                    </button>
                   )}
                 </div>
-              )}
-              {view === 'Export' && (
-                <>
-                  <section className="auto-backup-panel">
-                    <div className="auto-backup-heading">
-                      <div>
-                        <h2>Automatic backups</h2>
+              </div>
+              {dashboard ? (
+                <div className="projects-grid">
+                  {projects.map((p, i) => (
+                    <div
+                      className="project-card"
+                      key={p.id}
+                      onClick={() => {
+                        setProjectId(p.id);
+                        setSceneId('');
+                        setView(
+                          p.kind === 'series'
+                            ? 'Series overview'
+                            : 'Scene cards',
+                        );
+                        setEpisodeId(p.episodes?.[0]?.id ?? '');
+                        setDashboard(false);
+                      }}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          setProjectId(p.id);
+                          setSceneId('');
+                          setView(
+                            p.kind === 'series'
+                              ? 'Series overview'
+                              : 'Scene cards',
+                          );
+                          setEpisodeId(p.episodes?.[0]?.id ?? '');
+                          setDashboard(false);
+                        }
+                      }}
+                    >
+                      <div className={'project-cover cover' + (i % 3)}>
+                        <span>{p.format}</span>
+                        <div className="project-cover-title-wrap">
+                          <h2 style={{ fontSize: `${projectCoverTitleSize(p.title)}px` }}>
+                            {p.title}
+                          </h2>
+                        </div>
+                        <Clapperboard size={30} />
+                      </div>
+                      <div className="project-info">
+                        <div className="project-info-header">
+                          <h3>
+                            {p.title}
+                            <ArrowUpRight size={17} />
+                          </h3>
+                          {projects.length > 1 && (
+                            <button
+                              type="button"
+                              className="delete-project-btn"
+                              title="Delete project"
+                              aria-label={`Delete ${p.title}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (
+                                  window.confirm(
+                                    `Are you sure you want to delete "${p.title}"?`,
+                                  )
+                                ) {
+                                  deleteProject(p.id);
+                                }
+                              }}
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          )}
+                        </div>
                         <p>
-                          {isSeries
-                            ? 'Back up the entire series, including all episodes and images.'
-                            : 'Keep snapshots of your project, including scenes and images.'}
+                          {p.kind === 'series'
+                            ? 'Web series · ' +
+                              (p.episodes?.length ?? 0) +
+                              ' episodes'
+                            : p.format +
+                              ' · ' +
+                              p.scenes.length +
+                              ' scenes'}{' '}
+                          · {p.draft}
                         </p>
+                        <small>
+                          Edited {new Date(p.updatedAt).toLocaleDateString()}
+                        </small>
                       </div>
-                      <Switch
-                        aria-label="Enable automatic backups"
-                        checked={rootProject.backupSettings?.enabled ?? false}
-                        onCheckedChange={(enabled) =>
-                          setBackupSettings({ enabled })
-                        }
-                      />
                     </div>
-                    <div className="auto-backup-settings">
-                      <Choice
-                        label="Backup interval"
-                        value={
-                          'Every ' +
-                          (rootProject.backupSettings?.intervalMinutes ?? 15) +
-                          ' minutes'
-                        }
-                        options={backupIntervals.map(
-                          (n) => 'Every ' + n + ' minutes',
-                        )}
-                        onChange={(label) =>
-                          setBackupSettings({
-                            intervalMinutes: Number(label.split(' ')[1]),
-                          })
-                        }
-                      />
-                      <div className="backup-last">
-                        <span>Last automatic backup</span>
-                        <b>
-                          {lastBackups[rootProject.id]
-                            ? new Date(
-                                lastBackups[rootProject.id],
-                              ).toLocaleString()
-                            : 'No backup yet'}
-                        </b>
-                      </div>
-                      <Button
-                        variant="outline"
-                        disabled={!lastBackups[rootProject.id]}
-                        onClick={downloadLatestBackup}
+                  ))}
+                </div>
+              ) : (
+                <>
+                  {view !== 'Series overview' && (
+                    <div className="stats">
+                      <span>
+                        <b>{project.scenes.length}</b> scenes
+                      </span>
+                      <span>
+                        <b>{time(total)}</b> est. runtime
+                      </span>
+                      <span>
+                        <b>{project.characters.length}</b> characters
+                      </span>
+                      <span className="sync">
+                        <span /> Connected to screenplay
+                      </span>
+                    </div>
+                  )}
+                  {view === 'Scene cards' && (
+                    <>
+                      <div
+                        className="board"
+                        style={{
+                          gridTemplateColumns: `repeat(${project.acts.length},minmax(250px,1fr))`,
+                        }}
                       >
-                        <Download size={15} />
-                        Download latest backup
+                        {project.acts.map((act, i) => (
+                          <section
+                            className="act"
+                            key={act}
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              if (drag) reorder(drag, act);
+                              setDrag('');
+                            }}
+                          >
+                            <div className="act-title">
+                              <span className={'dot d' + i} />
+                              <h2>{act}</h2>
+                              <span>
+                                {
+                                  project.scenes.filter((s) => s.act === act)
+                                    .length
+                                }
+                              </span>
+                              <button
+                                aria-label={'Add scene to ' + act}
+                                onClick={() => addScene(act)}
+                              >
+                                <Plus size={16} />
+                              </button>
+                            </div>
+                            <button
+                              className="delete-column"
+                              disabled={project.acts.length <= 1}
+                              title={
+                                project.acts.length <= 1
+                                  ? 'Keep at least one column'
+                                  : 'Delete column and its scenes'
+                              }
+                              onClick={() => askDelete('act', act, act)}
+                            >
+                              <Trash2 size={13} />
+                              Delete column
+                            </button>
+                            <p className="act-sub">
+                              {[
+                                'The things we don’t say',
+                                'A thousand unsent thoughts',
+                                'Some words find their way',
+                              ][i] ?? 'A new chapter in your story'}
+                            </p>
+                            {project.scenes
+                              .filter((s) => s.act === act)
+                              .map((s) => {
+                                const number =
+                                  project.scenes.findIndex(
+                                    (a) => a.id === s.id,
+                                  ) + 1;
+                                return (
+                                  <article
+                                    className={
+                                      'scene-card emotion-card ' +
+                                      (drag === s.id ? 'dragging' : '')
+                                    }
+                                    style={
+                                      s.colour
+                                        ? {
+                                            borderTopColor: s.colour,
+                                            backgroundImage:
+                                              'linear-gradient(' +
+                                              s.colour +
+                                              '14, ' +
+                                              s.colour +
+                                              '04)',
+                                          }
+                                        : undefined
+                                    }
+                                    key={s.id}
+                                    draggable
+                                    onDragStart={(e) => {
+                                      setDrag(s.id);
+                                      e.dataTransfer.setData(
+                                        'text/plain',
+                                        s.id,
+                                      );
+                                    }}
+                                    onDragEnd={() => setDrag('')}
+                                    onDragOver={(e) => e.preventDefault()}
+                                    onDrop={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      if (drag && drag !== s.id)
+                                        reorder(drag, act, s.id);
+                                      setDrag('');
+                                    }}
+                                  >
+                                    <button
+                                      className="card-open"
+                                      onClick={() => openScene(s.id)}
+                                    >
+                                      <div className="card-meta">
+                                        <span>SCENE {pad(number)}</span>
+                                        <span className={'status ' + s.status}>
+                                          {s.status}
+                                        </span>
+                                      </div>
+                                      {s.emotion && (
+                                        <span className="emotion-label">
+                                          <span
+                                            style={{
+                                              background: s.colour || '#a6afb9',
+                                            }}
+                                          />
+                                          {s.emotion}
+                                        </span>
+                                      )}
+                                      <h3>{s.heading}</h3>
+                                      <p>
+                                        {s.summary ||
+                                          'Add a summary to shape this scene.'}
+                                      </p>
+                                    </button>
+                                    <div className="card-bottom">
+                                      <span>
+                                        {s.characterIds
+                                          .map(
+                                            (id) =>
+                                              project.characters.find(
+                                                (c) => c.id === id,
+                                              )?.name,
+                                          )
+                                          .join(' · ') || 'No dialogue yet'}
+                                      </span>
+                                      <span>
+                                        <Clock size={12} /> {s.duration} sec
+                                      </span>
+                                    </div>
+                                    <div className="card-tools">
+                                      <GripVertical size={13} />
+                                      <button
+                                        className="delete-element"
+                                        aria-label={'Delete scene ' + number}
+                                        title="Delete scene"
+                                        onClick={() =>
+                                          askDelete('scene', s.id, s.heading)
+                                        }
+                                      >
+                                        <Trash2 size={15} />
+                                      </button>
+                                      <button
+                                        aria-label={
+                                          'Set emotion colour for scene ' +
+                                          number
+                                        }
+                                        title="Emotion colour"
+                                        onClick={() => openScene(s.id)}
+                                      >
+                                        <Palette size={15} />
+                                      </button>
+                                      <button
+                                        aria-label={
+                                          'Move scene ' + number + ' up'
+                                        }
+                                        disabled={number === 1}
+                                        onClick={() => shiftScene(s.id, -1)}
+                                      >
+                                        <ArrowUp size={13} />
+                                      </button>
+                                      <button
+                                        aria-label={
+                                          'Move scene ' + number + ' down'
+                                        }
+                                        disabled={
+                                          number === project.scenes.length
+                                        }
+                                        onClick={() => shiftScene(s.id, 1)}
+                                      >
+                                        <ArrowDown size={13} />
+                                      </button>
+                                    </div>
+                                  </article>
+                                );
+                              })}
+                            <button
+                              className="add-card"
+                              onClick={() => addScene(act)}
+                            >
+                              <Plus size={14} /> Add scene
+                            </button>
+                          </section>
+                        ))}
+                      </div>
+                      <p className="board-hint">
+                        Drag to reorder your story. Screenplay scene numbers
+                        update automatically.
+                      </p>
+                    </>
+                  )}
+                  {view === 'Series overview' && isSeries && (
+                    <div className="series-workspace">
+                      <section className="form-panel">
+                        <div className="section-kicker">SERIES BIBLE</div>
+                        <Field
+                          label="Series title"
+                          value={rootProject.title}
+                          onChange={(title) => update((p) => ({ ...p, title }))}
+                        />
+                        <Field
+                          label="Series logline"
+                          value={rootProject.logline}
+                          onChange={(logline) =>
+                            update((p) => ({ ...p, logline }))
+                          }
+                          multiline
+                        />
+                        <div className="two-fields">
+                          <Field
+                            label="Genre"
+                            value={rootProject.genre}
+                            onChange={(genre) =>
+                              update((p) => ({ ...p, genre }))
+                            }
+                          />
+                          <Field
+                            label="Theme"
+                            value={rootProject.theme}
+                            onChange={(theme) =>
+                              update((p) => ({ ...p, theme }))
+                            }
+                          />
+                        </div>
+                        <Field
+                          label="Series arc"
+                          value={rootProject.synopsis}
+                          onChange={(synopsis) =>
+                            update((p) => ({ ...p, synopsis }))
+                          }
+                          multiline
+                        />
+                      </section>
+                      <section className="series-episodes">
+                        <div className="scene-section-title">
+                          <div>
+                            <h2>Seasons & episodes</h2>
+                            <p>
+                              {rootProject.episodes?.length} episodes ·{' '}
+                              {rootProject.episodes?.reduce(
+                                (n, e) => n + e.scenes.length,
+                                0,
+                              )}{' '}
+                              scenes across the series
+                            </p>
+                          </div>
+                          <button
+                            className="primary"
+                            onClick={() => setEpisodeDialog(true)}
+                          >
+                            <Plus size={16} />
+                            Add episode
+                          </button>
+                        </div>
+                        {Array.from(
+                          new Set(
+                            rootProject.episodes?.map(
+                              (e) => e.seasonNumber ?? 1,
+                            ),
+                          ),
+                        )
+                          .sort((a, b) => a - b)
+                          .map((seasonNumber) => (
+                            <div key={seasonNumber} className="season-group">
+                              <h3>Season {pad(seasonNumber)}</h3>
+                              {rootProject.episodes
+                                ?.filter((e) => e.seasonNumber === seasonNumber)
+                                .sort(
+                                  (a, b) =>
+                                    (a.episodeNumber ?? 0) -
+                                    (b.episodeNumber ?? 0),
+                                )
+                                .map((e) => (
+                                  <div
+                                    key={e.id}
+                                    className="episode-with-delete"
+                                  >
+                                    <button
+                                      className="episode-row"
+                                      onClick={() => selectEpisode(e.id)}
+                                    >
+                                      <span className="episode-code">
+                                        {episodeLabel(e)}
+                                      </span>
+                                      <span>
+                                        <b>{e.title}</b>
+                                        <small>
+                                          {e.scenes.length} scenes ·{' '}
+                                          {time(
+                                            e.scenes.reduce(
+                                              (n, s) => n + s.duration,
+                                              0,
+                                            ),
+                                          )}{' '}
+                                          · {e.draft}
+                                        </small>
+                                      </span>
+                                      <ArrowUpRight size={18} />
+                                    </button>
+                                    <button
+                                      className="delete-element episode-delete"
+                                      aria-label={
+                                        'Delete ' +
+                                        episodeLabel(e) +
+                                        ' ' +
+                                        e.title
+                                      }
+                                      onClick={() =>
+                                        askDelete(
+                                          'episode',
+                                          e.id,
+                                          episodeLabel(e) + ' · ' + e.title,
+                                        )
+                                      }
+                                    >
+                                      <Trash2 size={17} />
+                                    </button>
+                                  </div>
+                                ))}
+                            </div>
+                          ))}
+                      </section>
+                    </div>
+                  )}
+                  {isViewLocked(view) ? (
+                    <div className="flex flex-col items-center justify-center p-12 text-center h-full min-h-[420px] bg-card/20 border border-white/5 rounded-2xl m-6">
+                      <div className="w-14 h-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary mb-4 shadow-inner">
+                        <Lock className="w-7 h-7" />
+                      </div>
+                      <h2 className="text-xl font-bold text-white mb-2">
+                        {view} is Locked
+                      </h2>
+                      <p className="text-xs text-muted-foreground max-w-md mb-6 leading-relaxed">
+                        This production tool is part of Draft-it PRO. Upgrade to
+                        Plus or AI Plus to unlock {view}, shooting tools, and
+                        hosted Co-Drafter AI credits.
+                      </p>
+                      <Button
+                        onClick={() => {
+                          setUpgradeTargetFeature(view);
+                          setUpgradeModalOpen(true);
+                        }}
+                        className="bg-primary hover:bg-primary/90 text-white font-medium text-xs px-6 py-2.5 h-auto rounded-lg shadow-lg shadow-primary/20"
+                      >
+                        Upgrade to Unlock {view}
                       </Button>
                     </div>
-                    <p className="backup-explanation">
-                      {rootProject.backupSettings?.enabled ? 'On' : 'Off'} ·
-                      Keeps the latest 5 snapshots in this browser. Backups run
-                      while the app is open; a sleeping browser catches up when
-                      it resumes. Browser data clearing also removes these
-                      backups.
-                    </p>
-                    {backupErrors[rootProject.id] && (
-                      <p className="import-error" role="alert">
-                        {backupErrors[rootProject.id]}
-                      </p>
-                    )}
-                  </section>
-                  <div className="exports-grid">
-                    {[
-                      {
-                        name: 'Screenplay PDF',
-                        kind: 'PDF',
-                        desc: 'US Letter · Courier 12 · Numbered scenes and dialogue continuation markers.',
-                        icon: FileText,
-                      },
-                      {
-                        name: 'Fountain screenplay',
-                        kind: 'Fountain',
-                        desc: 'A portable plain-text screenplay for other writing tools.',
-                        icon: FileText,
-                      },
-                      {
-                        name: 'Plain text',
-                        kind: 'Text',
-                        desc: 'Your complete screenplay, in scene order.',
-                        icon: FileText,
-                      },
-                      {
-                        name: 'Shot list',
-                        kind: 'Shot list',
-                        desc: 'A CSV spreadsheet of your linked storyboard shots.',
-                        icon: ListVideo,
-                      },
-                      {
-                        name: 'Project backup',
-                        kind: 'Backup',
-                        desc: isSeries
-                          ? 'The complete series, including every episode and its images, in one JSON file.'
-                          : 'All scenes, characters, locations, and uploaded images in one JSON file.',
-                        icon: Save,
-                      },
-                    ].map(({ name, kind, desc, icon: I }) => (
-                      <section className="export-card" key={kind}>
-                        <I size={25} />
-                        <h2>{name}</h2>
-                        <p>{desc}</p>
-                        <button
-                          disabled={exporting}
-                          onClick={() => exportFile(kind)}
-                        >
-                          {exporting ? 'Preparing…' : 'Download'}
-                          <Download size={15} />
-                        </button>
+                  ) : (
+                    productionViews.includes(view) && (
+                      <ProductionWorkspace
+                        key={project.id + view}
+                        project={project}
+                        view={view}
+                        onUpdate={update}
+                        userId={user?.uid}
+                        rootId={rootProject.id}
+                        onScene={(id) => {
+                          setSceneId(id);
+                          setView('Screenplay');
+                        }}
+                      />
+                    )
+                  )}
+                  {view === 'Overview' && (
+                    <div className="project-overview">
+                      <section className="overview-summary">
+                        <div>
+                          <span className="section-kicker">
+                            {project.format} ·{' '}
+                            {project.genre || 'Genre not set'}
+                          </span>
+                          <h2>{project.title}</h2>
+                          <p>
+                            {project.logline ||
+                              'Your story starts with an idea. Add a logline in Story to give the project a direction.'}
+                          </p>
+                          <button
+                            className="overview-link"
+                            onClick={() => setView('Story')}
+                          >
+                            Develop the story <ArrowUpRight size={16} />
+                          </button>
+                        </div>
+                        <div className="overview-draft">
+                          <Field
+                            label="Current draft"
+                            value={project.draft}
+                            onChange={(draft) =>
+                              update((p) => ({ ...p, draft }))
+                            }
+                          />
+                          <p>
+                            Target runtime <b>{time(project.targetRuntime)}</b>
+                          </p>
+                          <p>
+                            Locations <b>{project.locations.length}</b>
+                          </p>
+                        </div>
                       </section>
+                      <div className="overview-progress-grid">
+                        <section className="overview-progress-card">
+                          <FileText size={22} />
+                          <h2>Screenplay status</h2>
+                          <strong>
+                            {
+                              project.scenes.filter(
+                                (s) =>
+                                  s.status === 'revised' ||
+                                  s.status === 'locked',
+                              ).length
+                            }
+                            <span>
+                              {' '}
+                              / {project.scenes.length} scenes revised or locked
+                            </span>
+                          </strong>
+                          <Progress
+                            aria-label="Scenes revised or locked"
+                            value={
+                              project.scenes.length
+                                ? (project.scenes.filter(
+                                    (s) =>
+                                      s.status === 'revised' ||
+                                      s.status === 'locked',
+                                  ).length /
+                                    project.scenes.length) *
+                                  100
+                                : 0
+                            }
+                          />
+                          <div className="overview-statuses">
+                            {['outline', 'draft', 'revised', 'locked'].map(
+                              (status) => (
+                                <span key={status}>
+                                  <b>
+                                    {
+                                      project.scenes.filter(
+                                        (s) => s.status === status,
+                                      ).length
+                                    }
+                                  </b>{' '}
+                                  {status}
+                                </span>
+                              ),
+                            )}
+                          </div>
+                          <button
+                            className="overview-link"
+                            onClick={() => setView('Scene cards')}
+                          >
+                            Review scenes <ArrowUpRight size={15} />
+                          </button>
+                        </section>
+                        <section className="overview-progress-card">
+                          <Images size={22} />
+                          <h2>Visual planning</h2>
+                          <strong>
+                            {
+                              project.scenes.filter((s) =>
+                                project.panels.some((p) => p.sceneId === s.id),
+                              ).length
+                            }
+                            <span>
+                              {' '}
+                              / {project.scenes.length} scenes with panels
+                            </span>
+                          </strong>
+                          <Progress
+                            aria-label="Scenes with storyboard panels"
+                            value={
+                              project.scenes.length
+                                ? (project.scenes.filter((s) =>
+                                    project.panels.some(
+                                      (p) => p.sceneId === s.id,
+                                    ),
+                                  ).length /
+                                    project.scenes.length) *
+                                  100
+                                : 0
+                            }
+                          />
+                          <p>
+                            {project.panels.length} panels ·{' '}
+                            {
+                              project.panels.filter(
+                                (p) =>
+                                  p.status === 'Ready' ||
+                                  p.status === 'Complete',
+                              ).length
+                            }{' '}
+                            shots ready or complete
+                          </p>
+                          <button
+                            className="overview-link"
+                            onClick={() => setView('Storyboard')}
+                          >
+                            Plan the frames <ArrowUpRight size={15} />
+                          </button>
+                        </section>
+                      </div>
+                      <section className="overview-workspaces">
+                        <h2>Continue your project</h2>
+                        <div>
+                          {[
+                            {
+                              name: 'Story',
+                              icon: BookOpen,
+                              text: 'Develop your premise, theme, and treatment.',
+                            },
+                            {
+                              name: 'Screenplay',
+                              icon: FileText,
+                              text: 'Pick up the script where your story needs you.',
+                            },
+                            {
+                              name: 'Shot list',
+                              icon: ListVideo,
+                              text: 'Review camera choices and shot readiness.',
+                            },
+                            {
+                              name: 'Export',
+                              icon: Download,
+                              text: 'Download your screenplay or a project backup.',
+                            },
+                          ].map(({ name, icon: Icon, text }) => (
+                            <button key={name} onClick={() => setView(name)}>
+                              <Icon size={20} />
+                              <span>
+                                <b>{name}</b>
+                                <small>{text}</small>
+                              </span>
+                              <ChevronRight size={16} />
+                            </button>
+                          ))}
+                        </div>
+                      </section>
+                    </div>
+                  )}
+                  {view === 'Story' && (
+                    <div className="story-writing">
+                      <section className="form-panel">
+                        <div className="section-title-row">
+                          <div className="section-kicker">STORY FOUNDATION</div>
+                          <button
+                            className="delete-element"
+                            onClick={() =>
+                              askDelete('story', '', project.title)
+                            }
+                          >
+                            <Trash2 size={14} />
+                            Clear story content
+                          </button>
+                        </div>
+                        <Field
+                          label="Title"
+                          value={project.title}
+                          onChange={(title) => update((p) => ({ ...p, title }))}
+                        />
+                        <Field
+                          label="Logline"
+                          value={project.logline}
+                          onChange={(logline) =>
+                            update((p) => ({ ...p, logline }))
+                          }
+                          multiline
+                        />
+                        <div className="two-fields">
+                          <Field
+                            label="Genre"
+                            value={project.genre}
+                            onChange={(genre) =>
+                              update((p) => ({ ...p, genre }))
+                            }
+                          />
+                          <Field
+                            label="Target runtime (seconds)"
+                            type="number"
+                            value={project.targetRuntime}
+                            onChange={(v) =>
+                              update((p) => ({
+                                ...p,
+                                targetRuntime: Number(v),
+                              }))
+                            }
+                          />
+                        </div>
+                        {(
+                          [
+                            'premise',
+                            'theme',
+                            'synopsis',
+                            'treatment',
+                            'notes',
+                            'references',
+                          ] as const
+                        ).map((key) => (
+                          <Field
+                            key={key}
+                            label={key === 'notes' ? 'Writer’s notes' : key}
+                            value={project[key]}
+                            onChange={(v) =>
+                              update((p) => ({ ...p, [key]: v }))
+                            }
+                            multiline
+                          />
+                        ))}
+                      </section>
+                    </div>
+                  )}
+                  {view === 'Screenplay' &&
+                    (scene ? (
+                      <div className="script-layout">
+                        <aside className="script-nav">
+                          <div className="section-kicker">
+                            SCENES{' '}
+                            <button
+                              aria-label="Add scene"
+                              onClick={() => addScene()}
+                            >
+                              <Plus size={14} />
+                            </button>
+                          </div>
+                          {project.acts.map((act) => (
+                            <div key={act}>
+                              <h3>{act}</h3>
+                              {project.scenes
+                                .filter((s) => s.act === act)
+                                .map((s) => (
+                                  <button
+                                    className={
+                                      scene.id === s.id ? 'selected' : ''
+                                    }
+                                    key={s.id}
+                                    onClick={() => setSceneId(s.id)}
+                                  >
+                                    <span>
+                                      {pad(project.scenes.indexOf(s) + 1)}
+                                    </span>
+                                    {s.heading
+                                      .replace(/^(INT.|EXT.) /, '')
+                                      .replace(' - NIGHT', '')}
+                                  </button>
+                                ))}
+                            </div>
+                          ))}
+                          <button
+                            className="metadata-button"
+                            onClick={() => setInspect(true)}
+                          >
+                            Scene details <ChevronRight size={14} />
+                          </button>
+                        </aside>
+                        <ScriptEditor
+                          key={scene.id}
+                          scene={scene}
+                          locations={project.locations.map((l) => l.name)}
+                          onChange={(blocks) =>
+                            patchScene(scene.id, { blocks })
+                          }
+                          onSelectionChange={setScreenplaySelection}
+                          onAskCoDrafter={openCoDrafterForSelection}
+                          clearSelectionNonce={clearSelectionNonce}
+                          onRegisterProposalActions={(actions) => {
+                            proposalActions.current = actions;
+                          }}
+                        />
+                      </div>
+                    ) : (
+                      <Empty
+                        icon={<FileText />}
+                        title="The first page is yours."
+                        text="Add a scene to begin writing."
+                        action={() => addScene()}
+                        label="Add first scene"
+                      />
                     ))}
-                  </div>
-                  <p className="export-note">
-                    Local saves work offline. Sign in with Google to sync
-                    projects and images to Firebase. Download a project backup
-                    to keep a separate copy. PDF pagination is a demo
-                    implementation; review the output before production use.
-                  </p>
+                  {view === 'Legacy Storyboard' && (
+                    <>
+                      <div className="scene-switcher">
+                        {project.scenes.map((s, i) => (
+                          <button
+                            className={scene?.id === s.id ? 'selected' : ''}
+                            key={s.id}
+                            onClick={() => setSceneId(s.id)}
+                          >
+                            Scene {pad(i + 1)}
+                          </button>
+                        ))}
+                      </div>
+                      {scene ? (
+                        <>
+                          <div className="scene-section-title">
+                            <h2>{scene.heading}</h2>
+                            <div className="scene-title-actions">
+                              <span>
+                                {
+                                  project.panels.filter(
+                                    (p) => p.sceneId === scene.id,
+                                  ).length
+                                }{' '}
+                                panels
+                              </span>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="auto-plan-btn"
+                                onClick={() => {
+                                  const existingCount = project.panels.filter(
+                                    (p) => p.sceneId === scene.id,
+                                  ).length;
+                                  setReplacePanels(existingCount > 0);
+                                  setAutoPlanScene(scene);
+                                }}
+                              >
+                                <Sparkles size={14} /> Auto plan scene
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="panels-grid">
+                            {project.panels
+                              .filter((p) => p.sceneId === scene.id)
+                              .map((p, i) => {
+                                const sceneHash =
+                                  computeSceneContentHash(scene);
+                                const isOutdated = !!(
+                                  p.sourceContentHash &&
+                                  p.sourceContentHash !== sceneHash
+                                );
+                                const shotLabel =
+                                  pad(project.scenes.indexOf(scene) + 1) +
+                                  String.fromCharCode(65 + (i % 26));
+                                return (
+                                  <div
+                                    className="panel-card-container"
+                                    key={p.id}
+                                  >
+                                    <div
+                                      className="panel-card"
+                                      onClick={() => setPanelEdit({ ...p })}
+                                      role="button"
+                                      tabIndex={0}
+                                    >
+                                      <div className="frame">
+                                        {p.image ? (
+                                          <img
+                                            alt={
+                                              p.description ||
+                                              'Storyboard frame'
+                                            }
+                                            src={p.image}
+                                          />
+                                        ) : (
+                                          <div>
+                                            <ImagePlus size={30} />
+                                            <span>Add a storyboard image</span>
+                                          </div>
+                                        )}
+                                        <b>{shotLabel}</b>
+                                        {isOutdated && (
+                                          <span
+                                            className="outdated-scene-badge"
+                                            title="Screenplay scene has changed since this panel was planned"
+                                          >
+                                            ⚠ Scene changed
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="panel-body">
+                                        <h3>
+                                          {p.size}
+                                          <span>{p.duration}s</span>
+                                        </h3>
+                                        <p>
+                                          {p.description ||
+                                            'Describe this frame.'}
+                                        </p>
+                                        <small>
+                                          {p.lens} · {p.movement}
+                                        </small>
+                                      </div>
+                                    </div>
+                                    <div className="panel-card-footer">
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="panel-prompt-btn"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setPromptModalPanel({ ...p });
+                                          setEditingCustomPrompt(false);
+                                          setCustomPromptDraft(
+                                            p.customPrompt ??
+                                              p.generatedPrompt ??
+                                              '',
+                                          );
+                                        }}
+                                      >
+                                        <FileText size={12} /> Prompt
+                                      </Button>
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="panel-edit-btn"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setPanelEdit({ ...p });
+                                        }}
+                                      >
+                                        Edit
+                                      </Button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            <button className="new-panel" onClick={addPanel}>
+                              <Plus size={26} />
+                              Add a panel
+                              <span>Upload a frame or plan the shot</span>
+                            </button>
+                          </div>
+                        </>
+                      ) : (
+                        <Empty
+                          icon={<Images />}
+                          title="Start with a scene."
+                          text="Storyboard panels connect to your screenplay scenes."
+                          label="Add scene"
+                          action={() => addScene()}
+                        />
+                      )}
+                    </>
+                  )}
+                  {view === 'Legacy Shot list' && (
+                    <div className="table-panel">
+                      <div className="table-caption">
+                        <span>
+                          {project.panels.length} shots · Linked to storyboard
+                          panels
+                        </span>
+                        <Button
+                          variant="outline"
+                          onClick={() => exportFile('Shot list')}
+                        >
+                          <Download size={14} />
+                          Export CSV
+                        </Button>
+                      </div>
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            {[
+                              'Shot',
+                              'Scene',
+                              'Size',
+                              'Movement',
+                              'Lens',
+                              'Duration',
+                              'Status',
+                            ].map((x) => (
+                              <TableHead key={x}>{x}</TableHead>
+                            ))}
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {project.scenes.flatMap((s, i) =>
+                            project.panels
+                              .filter((p) => p.sceneId === s.id)
+                              .map((p, j) => (
+                                <TableRow key={p.id}>
+                                  <TableCell>
+                                    <button
+                                      className="shot-link"
+                                      onClick={() => setPanelEdit({ ...p })}
+                                    >
+                                      {pad(i + 1) + String.fromCharCode(65 + j)}
+                                    </button>
+                                  </TableCell>
+                                  <TableCell>{s.heading}</TableCell>
+                                  <TableCell>{p.size}</TableCell>
+                                  <TableCell>{p.movement}</TableCell>
+                                  <TableCell>{p.lens}</TableCell>
+                                  <TableCell>{p.duration}s</TableCell>
+                                  <TableCell>
+                                    <span className="status revised">
+                                      {p.status}
+                                    </span>
+                                  </TableCell>
+                                </TableRow>
+                              )),
+                          )}
+                        </TableBody>
+                      </Table>
+                      {!project.panels.length && (
+                        <Empty
+                          icon={<ListVideo />}
+                          title="Plan your first shot."
+                          text="Add storyboard panels to build your shot list."
+                          label="Open storyboard"
+                          action={() => setView('Storyboard')}
+                        />
+                      )}
+                    </div>
+                  )}
+                  {(view === 'Legacy Characters' ||
+                    view === 'Legacy Locations') && (
+                    <div className="entities-grid">
+                      {(view === 'Legacy Characters'
+                        ? project.characters
+                        : project.locations
+                      ).map((e, i) => (
+                        <button
+                          className="entity-card"
+                          key={e.id}
+                          onClick={() => setEntityId(e.id)}
+                        >
+                          <div className={'entity-avatar av' + i}>
+                            {view === 'Legacy Characters' ? (
+                              e.name.slice(0, 1)
+                            ) : (
+                              <MapPin />
+                            )}
+                          </div>
+                          <span className="section-kicker">
+                            {view === 'Legacy Characters'
+                              ? (e as Person).role || 'CHARACTER'
+                              : 'LOCATION'}
+                          </span>
+                          <h2>{e.name}</h2>
+                          <p>
+                            {e.description ||
+                              'Add a description, details, and production notes.'}
+                          </p>
+                          <div className="entity-scenes">
+                            {
+                              project.scenes.filter((s) =>
+                                view === 'Legacy Characters'
+                                  ? s.characterIds.includes(e.id)
+                                  : s.locationId === e.id,
+                              ).length
+                            }{' '}
+                            scene appearances <ArrowUpRight size={15} />
+                          </div>
+                        </button>
+                      ))}
+                      {!(
+                        view === 'Legacy Characters'
+                          ? project.characters
+                          : project.locations
+                      ).length && (
+                        <Empty
+                          icon={
+                            view === 'Legacy Characters' ? (
+                              <Users />
+                            ) : (
+                              <MapPin />
+                            )
+                          }
+                          title={
+                            'Build your ' +
+                            (view === 'Legacy Characters' ? 'cast.' : 'world.')
+                          }
+                          text="Add an entry here, or let screenplay elements create it automatically."
+                          label="Add entry"
+                          action={() => {
+                            setTitle('');
+                            setNewEntity(true);
+                          }}
+                        />
+                      )}
+                    </div>
+                  )}
+                  {view === 'Export' && (
+                    <>
+                      <section className="auto-backup-panel">
+                        <div className="auto-backup-heading">
+                          <div>
+                            <h2>Automatic backups</h2>
+                            <p>
+                              {isSeries
+                                ? 'Back up the entire series, including all episodes and images.'
+                                : 'Keep snapshots of your project, including scenes and images.'}
+                            </p>
+                          </div>
+                          <Switch
+                            aria-label="Enable automatic backups"
+                            checked={
+                              rootProject.backupSettings?.enabled ?? false
+                            }
+                            onCheckedChange={(enabled) =>
+                              setBackupSettings({ enabled })
+                            }
+                          />
+                        </div>
+                        <div className="auto-backup-settings">
+                          <Choice
+                            label="Backup interval"
+                            value={
+                              'Every ' +
+                              (rootProject.backupSettings?.intervalMinutes ??
+                                15) +
+                              ' minutes'
+                            }
+                            options={backupIntervals.map(
+                              (n) => 'Every ' + n + ' minutes',
+                            )}
+                            onChange={(label) =>
+                              setBackupSettings({
+                                intervalMinutes: Number(label.split(' ')[1]),
+                              })
+                            }
+                          />
+                          <div className="backup-last">
+                            <span>Last automatic backup</span>
+                            <b>
+                              {lastBackups[rootProject.id]
+                                ? new Date(
+                                    lastBackups[rootProject.id],
+                                  ).toLocaleString()
+                                : 'No backup yet'}
+                            </b>
+                          </div>
+                          <Button
+                            variant="outline"
+                            disabled={!lastBackups[rootProject.id]}
+                            onClick={downloadLatestBackup}
+                          >
+                            <Download size={15} />
+                            Download latest backup
+                          </Button>
+                        </div>
+                        <p className="backup-explanation">
+                          {rootProject.backupSettings?.enabled ? 'On' : 'Off'} ·
+                          Keeps the latest 5 snapshots in this browser. Backups
+                          run while the app is open; a sleeping browser catches
+                          up when it resumes. Browser data clearing also removes
+                          these backups.
+                        </p>
+                        {backupErrors[rootProject.id] && (
+                          <p className="import-error" role="alert">
+                            {backupErrors[rootProject.id]}
+                          </p>
+                        )}
+                      </section>
+                      <div className="exports-grid">
+                        {[
+                          {
+                            name: 'Screenplay PDF',
+                            kind: 'PDF',
+                            desc: 'US Letter · Courier 12 · Numbered scenes and dialogue continuation markers.',
+                            icon: FileText,
+                          },
+                          {
+                            name: 'Fountain screenplay',
+                            kind: 'Fountain',
+                            desc: 'A portable plain-text screenplay for other writing tools.',
+                            icon: FileText,
+                          },
+                          {
+                            name: 'Plain text',
+                            kind: 'Text',
+                            desc: 'Your complete screenplay, in scene order.',
+                            icon: FileText,
+                          },
+                          {
+                            name: 'Shot list',
+                            kind: 'Shot list',
+                            desc: 'A CSV spreadsheet of your linked storyboard shots.',
+                            icon: ListVideo,
+                          },
+                          {
+                            name: 'Project backup',
+                            kind: 'Backup',
+                            desc: isSeries
+                              ? 'The complete series, including every episode and its images, in one JSON file.'
+                              : 'All scenes, characters, locations, and uploaded images in one JSON file.',
+                            icon: Save,
+                          },
+                        ].map(({ name, kind, desc, icon: I }) => (
+                          <section className="export-card" key={kind}>
+                            <I size={25} />
+                            <h2>{name}</h2>
+                            <p>{desc}</p>
+                            <button
+                              disabled={exporting}
+                              onClick={() => exportFile(kind)}
+                            >
+                              {exporting ? 'Preparing…' : 'Download'}
+                              <Download size={15} />
+                            </button>
+                          </section>
+                        ))}
+                      </div>
+                      <p className="export-note">
+                        Local saves work offline. Sign in with Google to sync
+                        projects and images to Firebase. Download a project
+                        backup to keep a separate copy. PDF pagination is a demo
+                        implementation; review the output before production use.
+                      </p>
+                    </>
+                  )}
                 </>
               )}
-            </>
-          )}
-        </section>
-      </main>
-    </SidebarProvider>
-  )}
+            </section>
+          </main>
+        </SidebarProvider>
+      )}
       {/* Draft AI Co-writer Panel */}
       {!dashboard && (
         <CoWriterDrawer
-          key={scope + ":" + project.id}
+          key={scope + ':' + project.id}
           isOpen={coWriterOpen}
           onClose={() => setCoWriterOpen(false)}
           rootProject={rootProject}
-          activeWorkspace={isSeries && view !== 'Series overview' ? project : undefined}
+          activeWorkspace={
+            isSeries && view !== 'Series overview' ? project : undefined
+          }
           activeView={view}
           currentSceneId={sceneId || scene?.id}
+          selection={screenplaySelection ?? undefined}
+          initialAction={coDrafterPendingAction ?? undefined}
+          hostedAiEnabled={!isAdmin && aiCreditStatus.hasHostedAi}
+          user={user}
+          onHostedRequestSettled={refreshEntitlements}
+          onApplyProposal={applyScreenplayProposal}
+          onResponseComplete={() => {
+            setScreenplaySelection(null);
+            setClearSelectionNonce((nonce) => nonce + 1);
+          }}
         />
       )}
-  <Dialog open={aiSettingsOpen} onOpenChange={setAiSettingsOpen}>
-    <DialogContent style={{ maxWidth: 600, maxHeight: '90vh', overflowY: 'auto' }}>
-      <DialogTitle>Co-Drafter AI Settings</DialogTitle>
-      <DialogDescription>
-        Configure your own LLM API credentials for Co-Drafter. Keys stay on your device.
-      </DialogDescription>
-      <AIProviderSettings onClose={() => setAiSettingsOpen(false)} />
-    </DialogContent>
-  </Dialog>
-  <Dialog open={create} onOpenChange={setCreate}>
-
+      <Dialog
+        open={coDrafterChooserOpen}
+        onOpenChange={setCoDrafterChooserOpen}
+      >
+        <DialogContent className="max-w-md">
+          {coDrafterModalStep === 1 ? (
+            <>
+              <DialogTitle>Choose what Co-Drafter should work on</DialogTitle>
+              <DialogDescription>
+                Your selection includes multiple screenplay blocks. Choose one.
+              </DialogDescription>
+              <div
+                className="space-y-2"
+                role="radiogroup"
+                aria-label="Co-Drafter source block"
+              >
+                {selectedCoDrafterBlocks.map((block) => (
+                  <label
+                    key={block.id}
+                    className={`flex cursor-pointer items-start gap-3 rounded-md border p-3 ${coDrafterChoiceId === block.id ? 'border-primary bg-primary/5' : 'border-border'}`}
+                  >
+                    <input
+                      type="radio"
+                      name="co-drafter-source-block"
+                      value={block.id}
+                      checked={coDrafterChoiceId === block.id}
+                      onChange={() => setCoDrafterChoiceId(block.id)}
+                      className="mt-1"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-[10px] font-semibold uppercase text-muted-foreground">
+                        {block.type.replace('_', ' ')}
+                      </span>
+                      <span className="block line-clamp-3 font-mono text-xs">
+                        {block.content}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <DialogTitle>What should Co-Drafter do?</DialogTitle>
+              <DialogDescription>
+                Choose an operation for this screenplay block.
+              </DialogDescription>
+              {selectedCoDrafterBlock && (
+                <div className="rounded-md border border-border bg-muted/30 p-3">
+                  <div className="text-[10px] font-semibold uppercase text-muted-foreground">
+                    {selectedCoDrafterBlock.type.replace('_', ' ')}
+                  </div>
+                  <div className="line-clamp-3 font-mono text-xs">
+                    {selectedCoDrafterBlock.content}
+                  </div>
+                </div>
+              )}
+              <div className="grid grid-cols-2 gap-2">
+                {compatibleLaunchActions.map((action) => (
+                  <Button
+                    key={action.id}
+                    type="button"
+                    variant="outline"
+                    className="justify-start"
+                    onClick={() => launchCoDrafterAction(action)}
+                  >
+                    {action.label}
+                  </Button>
+                ))}
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-medium">
+                  Custom instruction
+                </label>
+                <Textarea
+                  value={coDrafterCustomInstruction}
+                  onChange={(event) =>
+                    setCoDrafterCustomInstruction(event.target.value)
+                  }
+                  placeholder="Make this action feel more tense without adding dialogue..."
+                />
+                <Button
+                  type="button"
+                  disabled={!coDrafterCustomInstruction.trim()}
+                  onClick={launchCustomCoDrafterAction}
+                >
+                  Ask Co-Drafter
+                </Button>
+              </div>
+            </>
+          )}
+          <DialogFooter>
+            {coDrafterModalStep === 2 && selectedCoDrafterBlocks.length > 1 && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setCoDrafterModalStep(1)}
+              >
+                Back
+              </Button>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setCoDrafterChooserOpen(false)}
+            >
+              Cancel
+            </Button>
+            {coDrafterModalStep === 1 && (
+              <Button
+                type="button"
+                disabled={!coDrafterChoiceId}
+                onClick={continueCoDrafterChoice}
+              >
+                Continue
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {canAccessByok && (
+        <Dialog open={aiSettingsOpen} onOpenChange={setAiSettingsOpen}>
+          <DialogContent
+            style={{ maxWidth: 600, maxHeight: '90vh', overflowY: 'auto' }}
+          >
+            <DialogTitle>Co-Drafter AI Settings</DialogTitle>
+            <DialogDescription>
+              Configure your own LLM API credentials for Co-Drafter. Keys stay
+              on your device.
+            </DialogDescription>
+            <AIProviderSettings onClose={() => setAiSettingsOpen(false)} />
+          </DialogContent>
+        </Dialog>
+      )}
+      <UpgradeModal
+        open={upgradeModalOpen}
+        onOpenChange={setUpgradeModalOpen}
+        targetFeatureName={upgradeTargetFeature}
+      />
+      <Dialog open={create} onOpenChange={setCreate}>
         <DialogContent>
           <DialogTitle>Start a new story</DialogTitle>
           <DialogDescription>
@@ -2824,7 +3628,9 @@ export default function Home() {
             onClick={() => {
               const name = title.trim().toUpperCase();
               const list =
-                view === 'Legacy Characters' ? project.characters : project.locations;
+                view === 'Legacy Characters'
+                  ? project.characters
+                  : project.locations;
               if (list.some((e) => e.name === name)) {
                 setNotice('That entry already exists.');
                 return;
@@ -2919,30 +3725,24 @@ export default function Home() {
                   }
                   multiline
                 />
-                {(
-                  [
-                    'goals',
-                    'fear',
-                    'backstory',
-                    'arc',
-                    'notes',
-                  ] as const
-                ).map((k) => (
-                  <Field
-                    key={k}
-                    label={k}
-                    value={person[k]}
-                    onChange={(v) =>
-                      update((p) => ({
-                        ...p,
-                        characters: p.characters.map((c) =>
-                          c.id === person.id ? { ...c, [k]: v } : c,
-                        ),
-                      }))
-                    }
-                    multiline
-                  />
-                ))}
+                {(['goals', 'fear', 'backstory', 'arc', 'notes'] as const).map(
+                  (k) => (
+                    <Field
+                      key={k}
+                      label={k}
+                      value={person[k]}
+                      onChange={(v) =>
+                        update((p) => ({
+                          ...p,
+                          characters: p.characters.map((c) =>
+                            c.id === person.id ? { ...c, [k]: v } : c,
+                          ),
+                        }))
+                      }
+                      multiline
+                    />
+                  ),
+                )}
               </>
             )}
             {place && (
@@ -3186,153 +3986,71 @@ export default function Home() {
         <DialogContent className="prompt-dialog">
           <DialogTitle>Storyboard Prompt</DialogTitle>
           <DialogDescription>
-            Deterministic production prompt compiled directly from your screenplay.
+            Deterministic production prompt compiled directly from your
+            screenplay.
           </DialogDescription>
-          {promptModalPanel && (() => {
-            const currentScene = project.scenes.find((s) => s.id === promptModalPanel.sceneId) ?? scene;
-            const currentHash = currentScene ? computeSceneContentHash(currentScene) : '';
-            const isChanged = !!(promptModalPanel.sourceContentHash && promptModalPanel.sourceContentHash !== currentHash);
+          {promptModalPanel &&
+            (() => {
+              const currentScene =
+                project.scenes.find((s) => s.id === promptModalPanel.sceneId) ??
+                scene;
+              const currentHash = currentScene
+                ? computeSceneContentHash(currentScene)
+                : '';
+              const isChanged = !!(
+                promptModalPanel.sourceContentHash &&
+                promptModalPanel.sourceContentHash !== currentHash
+              );
 
-            const effectivePrompt = promptModalPanel.customPrompt ?? promptModalPanel.generatedPrompt ?? (
-              currentScene
-                ? buildStoryboardPrompt(
-                    currentScene,
-                    promptModalPanel.shotIntent ?? {
-                      id: promptModalPanel.id,
-                      sceneId: currentScene.id,
-                      panelNumber: '01A',
-                      shotSize: 'wide',
-                      angle: 'eye_level',
-                      movement: 'static',
-                      purpose: 'establish',
-                      description: promptModalPanel.description,
-                      characterIds: currentScene.characterIds,
-                      lens: promptModalPanel.lens,
-                    },
-                    project.characters,
-                    project.locations.find((l) => l.id === currentScene.locationId),
-                    project.aspectRatio || '16:9',
-                    project.storyboardStyle || 'pencil',
-                  )
-                : ''
-            );
+              const effectivePrompt =
+                promptModalPanel.customPrompt ??
+                promptModalPanel.generatedPrompt ??
+                (currentScene
+                  ? buildStoryboardPrompt(
+                      currentScene,
+                      promptModalPanel.shotIntent ?? {
+                        id: promptModalPanel.id,
+                        sceneId: currentScene.id,
+                        panelNumber: '01A',
+                        shotSize: 'wide',
+                        angle: 'eye_level',
+                        movement: 'static',
+                        purpose: 'establish',
+                        description: promptModalPanel.description,
+                        characterIds: currentScene.characterIds,
+                        lens: promptModalPanel.lens,
+                      },
+                      project.characters,
+                      project.locations.find(
+                        (l) => l.id === currentScene.locationId,
+                      ),
+                      project.aspectRatio || '16:9',
+                      project.storyboardStyle || 'pencil',
+                    )
+                  : '');
 
-            return (
-              <div className="prompt-modal-content">
-                <div className="prompt-meta-header">
-                  <div className="prompt-scene-tag">{currentScene?.heading}</div>
-                  <div className="prompt-shot-tags">
-                    <span>{promptModalPanel.size}</span>
-                    <span>{promptModalPanel.angle || 'Eye-level'}</span>
-                    <span>{promptModalPanel.lens || '35mm'}</span>
-                    <span>{promptModalPanel.movement || 'Static'}</span>
+              return (
+                <div className="prompt-modal-content">
+                  <div className="prompt-meta-header">
+                    <div className="prompt-scene-tag">
+                      {currentScene?.heading}
+                    </div>
+                    <div className="prompt-shot-tags">
+                      <span>{promptModalPanel.size}</span>
+                      <span>{promptModalPanel.angle || 'Eye-level'}</span>
+                      <span>{promptModalPanel.lens || '35mm'}</span>
+                      <span>{promptModalPanel.movement || 'Static'}</span>
+                    </div>
                   </div>
-                </div>
 
-                {isChanged && (
-                  <div className="prompt-outdated-alert">
-                    <span>⚠ Screenplay has changed since this prompt was planned</span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        if (!currentScene) return;
-                        const regenerated = buildStoryboardPrompt(
-                          currentScene,
-                          promptModalPanel.shotIntent ?? {
-                            id: promptModalPanel.id,
-                            sceneId: currentScene.id,
-                            panelNumber: '01A',
-                            shotSize: 'wide',
-                            angle: 'eye_level',
-                            movement: 'static',
-                            purpose: 'establish',
-                            description: promptModalPanel.description,
-                            characterIds: currentScene.characterIds,
-                            lens: promptModalPanel.lens,
-                          },
-                          project.characters,
-                          project.locations.find((l) => l.id === currentScene.locationId),
-                          project.aspectRatio || '16:9',
-                          project.storyboardStyle || 'pencil',
-                        );
-                        const updatedPanel: Panel = {
-                          ...promptModalPanel,
-                          generatedPrompt: regenerated,
-                          customPrompt: undefined,
-                          sourceContentHash: currentHash,
-                        };
-                        update((p) => ({
-                          ...p,
-                          panels: p.panels.map((x) => x.id === updatedPanel.id ? updatedPanel : x),
-                        }));
-                        setPromptModalPanel(updatedPanel);
-                        setEditingCustomPrompt(false);
-                        setNotice('Prompt regenerated with latest scene changes.');
-                      }}
-                    >
-                      <RefreshCw size={12} /> Refresh prompt
-                    </Button>
-                  </div>
-                )}
-
-                <div className="prompt-box">
-                  {editingCustomPrompt ? (
-                    <Textarea
-                      className="prompt-textarea"
-                      rows={12}
-                      value={customPromptDraft}
-                      onChange={(e) => setCustomPromptDraft(e.target.value)}
-                    />
-                  ) : (
-                    <pre className="prompt-text-display">{effectivePrompt}</pre>
-                  )}
-                </div>
-
-                <div className="prompt-modal-actions">
-                  <Button
-                    className="copy-prompt-btn"
-                    onClick={() => {
-                      navigator.clipboard.writeText(editingCustomPrompt ? customPromptDraft : effectivePrompt);
-                      setCopiedPrompt(true);
-                      setTimeout(() => setCopiedPrompt(false), 2000);
-                    }}
-                  >
-                    {copiedPrompt ? <Check size={15} /> : <Copy size={15} />}
-                    {copiedPrompt ? 'Copied to clipboard!' : 'Copy prompt'}
-                  </Button>
-
-                  {editingCustomPrompt ? (
-                    <>
-                      <Button
-                        variant="default"
-                        onClick={() => {
-                          const updatedPanel: Panel = {
-                            ...promptModalPanel,
-                            customPrompt: customPromptDraft.trim(),
-                          };
-                          update((p) => ({
-                            ...p,
-                            panels: p.panels.map((x) => x.id === updatedPanel.id ? updatedPanel : x),
-                          }));
-                          setPromptModalPanel(updatedPanel);
-                          setEditingCustomPrompt(false);
-                          setNotice('Custom prompt saved.');
-                        }}
-                      >
-                        Save custom prompt
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        onClick={() => setEditingCustomPrompt(false)}
-                      >
-                        Cancel
-                      </Button>
-                    </>
-                  ) : (
-                    <>
+                  {isChanged && (
+                    <div className="prompt-outdated-alert">
+                      <span>
+                        ⚠ Screenplay has changed since this prompt was planned
+                      </span>
                       <Button
                         variant="outline"
+                        size="sm"
                         onClick={() => {
                           if (!currentScene) return;
                           const regenerated = buildStoryboardPrompt(
@@ -3350,7 +4068,9 @@ export default function Home() {
                               lens: promptModalPanel.lens,
                             },
                             project.characters,
-                            project.locations.find((l) => l.id === currentScene.locationId),
+                            project.locations.find(
+                              (l) => l.id === currentScene.locationId,
+                            ),
                             project.aspectRatio || '16:9',
                             project.storyboardStyle || 'pencil',
                           );
@@ -3362,51 +4082,169 @@ export default function Home() {
                           };
                           update((p) => ({
                             ...p,
-                            panels: p.panels.map((x) => x.id === updatedPanel.id ? updatedPanel : x),
+                            panels: p.panels.map((x) =>
+                              x.id === updatedPanel.id ? updatedPanel : x,
+                            ),
                           }));
                           setPromptModalPanel(updatedPanel);
-                          setNotice('Regenerated prompt from scene structure.');
+                          setEditingCustomPrompt(false);
+                          setNotice(
+                            'Prompt regenerated with latest scene changes.',
+                          );
                         }}
                       >
-                        <RefreshCw size={13} /> Regenerate from scene
+                        <RefreshCw size={12} /> Refresh prompt
                       </Button>
+                    </div>
+                  )}
 
-                      <Button
-                        variant="ghost"
-                        onClick={() => {
-                          setCustomPromptDraft(effectivePrompt);
-                          setEditingCustomPrompt(true);
-                        }}
-                      >
-                        Edit prompt
-                      </Button>
+                  <div className="prompt-box">
+                    {editingCustomPrompt ? (
+                      <Textarea
+                        className="prompt-textarea"
+                        rows={12}
+                        value={customPromptDraft}
+                        onChange={(e) => setCustomPromptDraft(e.target.value)}
+                      />
+                    ) : (
+                      <pre className="prompt-text-display">
+                        {effectivePrompt}
+                      </pre>
+                    )}
+                  </div>
 
-                      {promptModalPanel.customPrompt && (
+                  <div className="prompt-modal-actions">
+                    <Button
+                      className="copy-prompt-btn"
+                      onClick={() => {
+                        navigator.clipboard.writeText(
+                          editingCustomPrompt
+                            ? customPromptDraft
+                            : effectivePrompt,
+                        );
+                        setCopiedPrompt(true);
+                        setTimeout(() => setCopiedPrompt(false), 2000);
+                      }}
+                    >
+                      {copiedPrompt ? <Check size={15} /> : <Copy size={15} />}
+                      {copiedPrompt ? 'Copied to clipboard!' : 'Copy prompt'}
+                    </Button>
+
+                    {editingCustomPrompt ? (
+                      <>
                         <Button
-                          variant="ghost"
-                          className="text-xs text-muted-foreground"
+                          variant="default"
                           onClick={() => {
                             const updatedPanel: Panel = {
                               ...promptModalPanel,
-                              customPrompt: undefined,
+                              customPrompt: customPromptDraft.trim(),
                             };
                             update((p) => ({
                               ...p,
-                              panels: p.panels.map((x) => x.id === updatedPanel.id ? updatedPanel : x),
+                              panels: p.panels.map((x) =>
+                                x.id === updatedPanel.id ? updatedPanel : x,
+                              ),
                             }));
                             setPromptModalPanel(updatedPanel);
-                            setNotice('Reset to generated prompt.');
+                            setEditingCustomPrompt(false);
+                            setNotice('Custom prompt saved.');
                           }}
                         >
-                          Reset to generated
+                          Save custom prompt
                         </Button>
-                      )}
-                    </>
-                  )}
+                        <Button
+                          variant="ghost"
+                          onClick={() => setEditingCustomPrompt(false)}
+                        >
+                          Cancel
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Button
+                          variant="outline"
+                          onClick={() => {
+                            if (!currentScene) return;
+                            const regenerated = buildStoryboardPrompt(
+                              currentScene,
+                              promptModalPanel.shotIntent ?? {
+                                id: promptModalPanel.id,
+                                sceneId: currentScene.id,
+                                panelNumber: '01A',
+                                shotSize: 'wide',
+                                angle: 'eye_level',
+                                movement: 'static',
+                                purpose: 'establish',
+                                description: promptModalPanel.description,
+                                characterIds: currentScene.characterIds,
+                                lens: promptModalPanel.lens,
+                              },
+                              project.characters,
+                              project.locations.find(
+                                (l) => l.id === currentScene.locationId,
+                              ),
+                              project.aspectRatio || '16:9',
+                              project.storyboardStyle || 'pencil',
+                            );
+                            const updatedPanel: Panel = {
+                              ...promptModalPanel,
+                              generatedPrompt: regenerated,
+                              customPrompt: undefined,
+                              sourceContentHash: currentHash,
+                            };
+                            update((p) => ({
+                              ...p,
+                              panels: p.panels.map((x) =>
+                                x.id === updatedPanel.id ? updatedPanel : x,
+                              ),
+                            }));
+                            setPromptModalPanel(updatedPanel);
+                            setNotice(
+                              'Regenerated prompt from scene structure.',
+                            );
+                          }}
+                        >
+                          <RefreshCw size={13} /> Regenerate from scene
+                        </Button>
+
+                        <Button
+                          variant="ghost"
+                          onClick={() => {
+                            setCustomPromptDraft(effectivePrompt);
+                            setEditingCustomPrompt(true);
+                          }}
+                        >
+                          Edit prompt
+                        </Button>
+
+                        {promptModalPanel.customPrompt && (
+                          <Button
+                            variant="ghost"
+                            className="text-xs text-muted-foreground"
+                            onClick={() => {
+                              const updatedPanel: Panel = {
+                                ...promptModalPanel,
+                                customPrompt: undefined,
+                              };
+                              update((p) => ({
+                                ...p,
+                                panels: p.panels.map((x) =>
+                                  x.id === updatedPanel.id ? updatedPanel : x,
+                                ),
+                              }));
+                              setPromptModalPanel(updatedPanel);
+                              setNotice('Reset to generated prompt.');
+                            }}
+                          >
+                            Reset to generated
+                          </Button>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-          })()}
+              );
+            })()}
         </DialogContent>
       </Dialog>
 
@@ -3420,118 +4258,152 @@ export default function Home() {
         <DialogContent className="auto-plan-dialog">
           <DialogTitle>Auto Storyboard Plan</DialogTitle>
           <DialogDescription>
-            Converts screenplay scenes into editable shot suggestions and production-ready visual prompts.
+            Converts screenplay scenes into editable shot suggestions and
+            production-ready visual prompts.
           </DialogDescription>
-          {autoPlanScene && (() => {
-            const plan = planSceneStoryboard(
-              autoPlanScene,
-              project.scenes.indexOf(autoPlanScene),
-              project.characters,
-              project.locations,
-            );
-            const scenePanelsCount = project.panels.filter((p) => p.sceneId === autoPlanScene.id).length;
+          {autoPlanScene &&
+            (() => {
+              const plan = planSceneStoryboard(
+                autoPlanScene,
+                project.scenes.indexOf(autoPlanScene),
+                project.characters,
+                project.locations,
+              );
+              const scenePanelsCount = project.panels.filter(
+                (p) => p.sceneId === autoPlanScene.id,
+              ).length;
 
-            return (
-              <div className="auto-plan-content">
-                <div className="auto-plan-scene-heading">{autoPlanScene.heading}</div>
-                <div className="auto-plan-badges">
-                  <span className="pill-badge">{plan.detectedBeatsCount} visual beats</span>
-                  <span className="pill-badge">{plan.speakingCharacters.length} speaking characters</span>
-                  <span className="pill-badge">{plan.locationName}</span>
-                  {plan.propsFound.length > 0 && (
-                    <span className="pill-badge">{plan.propsFound.length} prop(s): {plan.propsFound.join(', ')}</span>
-                  )}
-                </div>
+              return (
+                <div className="auto-plan-content">
+                  <div className="auto-plan-scene-heading">
+                    {autoPlanScene.heading}
+                  </div>
+                  <div className="auto-plan-badges">
+                    <span className="pill-badge">
+                      {plan.detectedBeatsCount} visual beats
+                    </span>
+                    <span className="pill-badge">
+                      {plan.speakingCharacters.length} speaking characters
+                    </span>
+                    <span className="pill-badge">{plan.locationName}</span>
+                    {plan.propsFound.length > 0 && (
+                      <span className="pill-badge">
+                        {plan.propsFound.length} prop(s):{' '}
+                        {plan.propsFound.join(', ')}
+                      </span>
+                    )}
+                  </div>
 
-                <div className="auto-plan-shots-list">
-                  <h4>Suggested Panels</h4>
-                  <div className="shots-scroll">
-                    {plan.suggestedPanels.map((shot) => (
-                      <div className="suggested-shot-row" key={shot.id}>
-                        <div className="shot-row-badge">
-                          <Check size={14} className="text-green-600" />
-                          <b>{shot.panelNumber}</b>
-                        </div>
-                        <div className="shot-row-details">
-                          <div className="shot-row-type">
-                            <span className="font-semibold text-slate-800">{shotSizeLabel(shot.shotSize)}</span>
-                            <span className="text-slate-400">·</span>
-                            <span className="text-slate-600">{shot.lens || '35mm'}</span>
-                            <span className="text-slate-400">·</span>
-                            <span className="text-slate-600">{cameraMovementLabel(shot.movement)}</span>
+                  <div className="auto-plan-shots-list">
+                    <h4>Suggested Panels</h4>
+                    <div className="shots-scroll">
+                      {plan.suggestedPanels.map((shot) => (
+                        <div className="suggested-shot-row" key={shot.id}>
+                          <div className="shot-row-badge">
+                            <Check size={14} className="text-green-600" />
+                            <b>{shot.panelNumber}</b>
                           </div>
-                          <p className="shot-row-desc">{shot.description}</p>
+                          <div className="shot-row-details">
+                            <div className="shot-row-type">
+                              <span className="font-semibold text-slate-800">
+                                {shotSizeLabel(shot.shotSize)}
+                              </span>
+                              <span className="text-slate-400">·</span>
+                              <span className="text-slate-600">
+                                {shot.lens || '35mm'}
+                              </span>
+                              <span className="text-slate-400">·</span>
+                              <span className="text-slate-600">
+                                {cameraMovementLabel(shot.movement)}
+                              </span>
+                            </div>
+                            <p className="shot-row-desc">{shot.description}</p>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
+                  </div>
+
+                  {scenePanelsCount > 0 && (
+                    <label className="replace-panels-toggle">
+                      <input
+                        type="checkbox"
+                        checked={replacePanels}
+                        onChange={(e) => setReplacePanels(e.target.checked)}
+                      />
+                      <span>
+                        Replace existing {scenePanelsCount} panel(s) in this
+                        scene
+                      </span>
+                    </label>
+                  )}
+
+                  <div className="auto-plan-actions">
+                    <Button
+                      className="create-panels-btn"
+                      onClick={() => {
+                        const sceneHash =
+                          computeSceneContentHash(autoPlanScene);
+                        const generatedPanels: Panel[] =
+                          plan.suggestedPanels.map((shot) => {
+                            const prompt = buildStoryboardPrompt(
+                              autoPlanScene,
+                              shot,
+                              project.characters,
+                              project.locations.find(
+                                (l) => l.id === autoPlanScene.locationId,
+                              ),
+                              project.aspectRatio || '16:9',
+                              project.storyboardStyle || 'pencil',
+                            );
+                            return {
+                              id: uid(),
+                              sceneId: autoPlanScene.id,
+                              size: shotSizeLabel(shot.shotSize),
+                              angle: cameraAngleLabel(shot.angle),
+                              lens: shot.lens || '35mm',
+                              movement: cameraMovementLabel(shot.movement),
+                              duration: shot.duration || 3,
+                              description: shot.description,
+                              status: 'Planned',
+                              shotIntent: shot,
+                              generatedPrompt: prompt,
+                              promptVersion: 1,
+                              sourceContentHash: sceneHash,
+                            };
+                          });
+
+                        update((p) => {
+                          const remaining = replacePanels
+                            ? p.panels.filter(
+                                (x) => x.sceneId !== autoPlanScene.id,
+                              )
+                            : p.panels;
+                          return {
+                            ...p,
+                            panels: [...remaining, ...generatedPanels],
+                          };
+                        });
+
+                        setAutoPlanScene(null);
+                        setNotice(
+                          `Created ${generatedPanels.length} storyboard panels with deterministic prompts.`,
+                        );
+                      }}
+                    >
+                      <Sparkles size={15} /> Create{' '}
+                      {plan.suggestedPanels.length} panels
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => setAutoPlanScene(null)}
+                    >
+                      Cancel
+                    </Button>
                   </div>
                 </div>
-
-                {scenePanelsCount > 0 && (
-                  <label className="replace-panels-toggle">
-                    <input
-                      type="checkbox"
-                      checked={replacePanels}
-                      onChange={(e) => setReplacePanels(e.target.checked)}
-                    />
-                    <span>Replace existing {scenePanelsCount} panel(s) in this scene</span>
-                  </label>
-                )}
-
-                <div className="auto-plan-actions">
-                  <Button
-                    className="create-panels-btn"
-                    onClick={() => {
-                      const sceneHash = computeSceneContentHash(autoPlanScene);
-                      const generatedPanels: Panel[] = plan.suggestedPanels.map((shot) => {
-                        const prompt = buildStoryboardPrompt(
-                          autoPlanScene,
-                          shot,
-                          project.characters,
-                          project.locations.find((l) => l.id === autoPlanScene.locationId),
-                          project.aspectRatio || '16:9',
-                          project.storyboardStyle || 'pencil',
-                        );
-                        return {
-                          id: uid(),
-                          sceneId: autoPlanScene.id,
-                          size: shotSizeLabel(shot.shotSize),
-                          angle: cameraAngleLabel(shot.angle),
-                          lens: shot.lens || '35mm',
-                          movement: cameraMovementLabel(shot.movement),
-                          duration: shot.duration || 3,
-                          description: shot.description,
-                          status: 'Planned',
-                          shotIntent: shot,
-                          generatedPrompt: prompt,
-                          promptVersion: 1,
-                          sourceContentHash: sceneHash,
-                        };
-                      });
-
-                      update((p) => {
-                        const remaining = replacePanels
-                          ? p.panels.filter((x) => x.sceneId !== autoPlanScene.id)
-                          : p.panels;
-                        return {
-                          ...p,
-                          panels: [...remaining, ...generatedPanels],
-                        };
-                      });
-
-                      setAutoPlanScene(null);
-                      setNotice(`Created ${generatedPanels.length} storyboard panels with deterministic prompts.`);
-                    }}
-                  >
-                    <Sparkles size={15} /> Create {plan.suggestedPanels.length} panels
-                  </Button>
-                  <Button variant="ghost" onClick={() => setAutoPlanScene(null)}>
-                    Cancel
-                  </Button>
-                </div>
-              </div>
-            );
-          })()}
+              );
+            })()}
         </DialogContent>
       </Dialog>
       <AlertDialog

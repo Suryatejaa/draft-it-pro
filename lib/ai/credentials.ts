@@ -18,7 +18,6 @@ export const DEFAULT_AI_SETTINGS: ProviderSettings = {
     primaryProviderId: 'sarvam',
     primaryModel: 'sarvam-105b',
     fallbacks: [
-      { providerId: 'sarvam', model: 'sarvam-30b' },
       { providerId: 'openai-compatible', model: 'gpt-4o-mini' },
     ],
   },

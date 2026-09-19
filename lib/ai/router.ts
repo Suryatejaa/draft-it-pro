@@ -91,6 +91,21 @@ export class ModelRouter {
   private settings: ProviderSettings;
   private providers: Map<LLMProviderId, LLMProvider>;
 
+  static resolveModelForIntent({
+    provider,
+    configuredModel,
+    intent,
+  }: {
+    provider: LLMProviderId | 'auto';
+    configuredModel?: string;
+    intent?: string;
+  }): string {
+    const fallbackModel = configuredModel && configuredModel.trim().length > 0 ? configuredModel : 'sarvam-105b';
+    void provider;
+    void intent;
+    return fallbackModel;
+  }
+
   constructor(settings: ProviderSettings) {
     this.settings = settings;
     this.providers = new Map();
@@ -111,10 +126,18 @@ export class ModelRouter {
     }
   }
 
-  private buildRouteTargets(explicitModel?: string): RouteTarget[] {
+  private buildRouteTargets(explicitModel?: string, intent?: string): RouteTarget[] {
     const targets: RouteTarget[] = [];
 
-    // If explicit model requested (and not 'auto')
+    const baseModel = this.settings.sarvam?.model || 'sarvam-105b';
+    const effectiveModel = explicitModel && explicitModel !== 'auto'
+      ? explicitModel
+      : ModelRouter.resolveModelForIntent({
+          provider: 'sarvam',
+          configuredModel: baseModel,
+          intent,
+        });
+
     if (explicitModel && explicitModel !== 'auto') {
       if (explicitModel.startsWith('sarvam-')) {
         targets.push({ providerId: 'sarvam', model: explicitModel });
@@ -124,19 +147,32 @@ export class ModelRouter {
           model: explicitModel,
         });
       }
+    } else if (intent === 'alternatives') {
+      targets.push({ providerId: 'sarvam', model: effectiveModel });
     }
 
     // Add primary target
     const primary = this.settings.routing.primaryProviderId || 'sarvam';
-    const primaryModel = this.settings.routing.primaryModel || 'sarvam-105b';
+    const primaryModel = explicitModel && explicitModel !== 'auto'
+      ? explicitModel
+      : ModelRouter.resolveModelForIntent({
+          provider: primary,
+          configuredModel: this.settings.routing.primaryModel || baseModel,
+          intent,
+        });
     if (!targets.some((t) => t.providerId === primary && t.model === primaryModel)) {
       targets.push({ providerId: primary, model: primaryModel });
     }
 
     // Add fallbacks
     for (const fb of this.settings.routing.fallbacks || []) {
-      if (!targets.some((t) => t.providerId === fb.providerId && t.model === fb.model)) {
-        targets.push({ providerId: fb.providerId, model: fb.model });
+      const fallbackModel = ModelRouter.resolveModelForIntent({
+        provider: fb.providerId,
+        configuredModel: fb.model,
+        intent,
+      });
+      if (!targets.some((t) => t.providerId === fb.providerId && t.model === fallbackModel)) {
+        targets.push({ providerId: fb.providerId, model: fallbackModel });
       }
     }
 
@@ -148,7 +184,7 @@ export class ModelRouter {
     selectedModel?: string
   ): Promise<LLMResponse> {
     if (request.abortSignal?.aborted) throw Object.assign(new Error('Request cancelled'), { name: 'AbortError', failureType: 'cancelled' });
-    const targets = this.buildRouteTargets(selectedModel);
+    const targets = this.buildRouteTargets(selectedModel, request.diagnostics?.intent);
     const attempted: Array<{
       providerId: LLMProviderId;
       model: string;
@@ -229,7 +265,7 @@ export class ModelRouter {
     selectedModel?: string
   ): Promise<LLMResponse> {
     if (request.abortSignal?.aborted) throw Object.assign(new Error('Request cancelled'), { name: 'AbortError', failureType: 'cancelled' });
-    const targets = this.buildRouteTargets(selectedModel);
+    const targets = this.buildRouteTargets(selectedModel, request.diagnostics?.intent);
     const attempted: Array<{
       providerId: LLMProviderId;
       model: string;

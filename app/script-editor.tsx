@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Extension } from '@tiptap/core';
@@ -10,6 +11,8 @@ import {
   type Block,
   type ElementType,
 } from '@/lib/project';
+import { computeSceneContentHash } from '@/lib/prompt-compiler';
+import type { ScreenplayProposal, ScreenplaySelection } from '@/lib/ai/screenplay-proposal';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -17,7 +20,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
 } from '@/components/ui/dropdown-menu';
-import { ChevronDown, Undo2, Redo2, Trash2 } from 'lucide-react';
+import { ChevronDown, Undo2, Redo2, Trash2, Sparkles } from 'lucide-react';
 
 const nextType: Record<string, ElementType> = {
   scene_heading: 'action',
@@ -214,6 +217,11 @@ export default function ScriptEditor({
   onOpenSceneDetails,
   isTypingFocus,
   onTypingFocusChange,
+  onSelectionChange,
+  onAskCoDrafter,
+  onCoDrafterAction,
+  clearSelectionNonce,
+  onRegisterProposalActions,
 }: {
   scene: Scene;
   onChange: (blocks: Block[]) => void;
@@ -225,6 +233,11 @@ export default function ScriptEditor({
   onOpenSceneDetails?: () => void;
   isTypingFocus?: boolean;
   onTypingFocusChange?: (isTyping: boolean) => void;
+  onSelectionChange?: (selection: ScreenplaySelection | null) => void;
+  onAskCoDrafter?: () => void;
+  onCoDrafterAction?: (action: 'tighten' | 'alternatives' | 'custom') => void;
+  clearSelectionNonce?: number;
+  onRegisterProposalActions?: (actions: { apply: (proposal: ScreenplayProposal) => boolean; insertBelow: (proposal: ScreenplayProposal) => boolean }) => void;
 }) {
   const callback = useRef(onChange);
   callback.current = onChange;
@@ -232,6 +245,8 @@ export default function ScriptEditor({
   const [active, setActive] = useState('action');
   const [slash, setSlash] = useState(false);
   const [zoom, setZoom] = useState<number>(1);
+  const [selection, setSelection] = useState<ScreenplaySelection | null>(null);
+  const [selectionPosition, setSelectionPosition] = useState<{ left: number; top: number } | null>(null);
 
   const initialBlocks = normalizeScreenplayBlocks(scene.blocks);
 
@@ -262,8 +277,46 @@ export default function ScriptEditor({
         'aria-label': 'Screenplay scene editor',
       },
     },
-    onSelectionUpdate: ({ editor }) =>
-      setActive(editor.getAttributes('paragraph').kind),
+    onSelectionUpdate: ({ editor }) => {
+      setActive(editor.getAttributes('paragraph').kind);
+      const { from, to, empty } = editor.state.selection;
+      if (empty) {
+        setSelection(null);
+        setSelectionPosition(null);
+        onSelectionChange?.(null);
+        if (process.env.NODE_ENV === 'development') console.debug('[CoDrafter Selection]', { from, to, empty, selectedTextLength: 0, blockCount: 0, blockTypes: [], sceneId: scene.id });
+        return;
+      }
+      const selected: Array<{ id: string; type: ElementType }> = [];
+      editor.state.doc.nodesBetween(from, to, (node, position) => {
+        if (node.type.name !== 'paragraph' || position + node.nodeSize < from || position > to) return;
+        const id = node.attrs.blockId;
+        const type = node.attrs.kind as ElementType;
+        if (typeof id === 'string' && !selected.some((block) => block.id === id)) selected.push({ id, type });
+      });
+      const nextSelection: ScreenplaySelection = {
+        sceneId: scene.id,
+        selectedBlockIds: selected.map((block) => block.id),
+        selectedText: editor.state.doc.textBetween(from, to, '\n').trim(),
+        blockTypes: selected.map((block) => block.type),
+        sourceRevision: computeSceneContentHash(scene),
+      };
+      setSelection(nextSelection);
+      const coordinates = editor.view.coordsAtPos(to);
+      setSelectionPosition({
+        left: Math.max(8, Math.min(coordinates.left, window.innerWidth - 170)),
+        top: Math.max(8, Math.min(coordinates.bottom + 8, window.innerHeight - 42)),
+      });
+      onSelectionChange?.(nextSelection);
+      if (process.env.NODE_ENV === 'development') {
+        const metadata = { from, to, empty, selectedTextLength: nextSelection.selectedText.length, blockCount: selected.length, blockTypes: nextSelection.blockTypes, sceneId: scene.id };
+        console.debug('[CoDrafter Selection]', metadata);
+        queueMicrotask(() => {
+          const current = editor.state.selection;
+          console.debug('[CoDrafter Selection final]', { ...metadata, from: current.from, to: current.to, empty: current.empty, selectedTextLength: editor.state.doc.textBetween(current.from, current.to, '\n').trim().length });
+        });
+      }
+    },
     onUpdate: ({ editor }) => {
       const blocks: Block[] = (editor.getJSON().content ?? []).map((n) => {
         let content = (n.content ?? [])
@@ -285,6 +338,12 @@ export default function ScriptEditor({
       setSlash(parent.startsWith('/'));
     },
   });
+
+  useEffect(() => {
+    if (!editor || clearSelectionNonce === undefined) return;
+    const { from } = editor.state.selection;
+    editor.commands.setTextSelection(from);
+  }, [clearSelectionNonce, editor]);
 
   useEffect(() => {
     if (!editor) return;
@@ -314,6 +373,77 @@ export default function ScriptEditor({
       );
     }
   }, [editor, scene.blocks]);
+
+  useEffect(() => {
+    if (!editor || !onRegisterProposalActions) return;
+    const toContent = (blocks: Block[]) => blocks.map((block) => ({
+      type: 'paragraph',
+      attrs: { kind: block.type, blockId: block.id },
+      content: block.content ? [{ type: 'text', text: block.content }] : [],
+    }));
+    onRegisterProposalActions({
+      apply: (proposal) => {
+        if (!proposal.operations.length) return false;
+        if (proposal.intent === 'alternatives' && (
+          proposal.operations.length !== proposal.sourceBlockIds.length
+          || proposal.operations.some((operation, index) => operation.sourceBlockId !== proposal.sourceBlockIds[index])
+        )) return false;
+        const sourceMap = new Map<string, { pos: number; node: any }>();
+        editor.state.doc.descendants((node, pos) => {
+          if (node.type.name === 'paragraph' && typeof node.attrs.blockId === 'string') {
+            sourceMap.set(node.attrs.blockId, { pos, node });
+          }
+        });
+        const replacements = proposal.operations
+          .map((operation) => {
+            const match = sourceMap.get(operation.sourceBlockId);
+            if (!match) return null;
+            return { operation, match };
+          })
+          .filter((entry): entry is { operation: typeof proposal.operations[number]; match: { pos: number; node: any } } => !!entry)
+          .sort((a, b) => b.match.pos - a.match.pos);
+        if (replacements.length !== proposal.operations.length) return false;
+        if (!replacements.every(({ operation, match }) => match.node.attrs.kind === operation.type)) return false;
+
+        const tr = editor.state.tr;
+        for (const { operation, match } of replacements) {
+          const replacement = editor.schema.nodeFromJSON({
+            type: 'paragraph',
+            attrs: { kind: operation.type, blockId: operation.sourceBlockId },
+            content: operation.text ? [{ type: 'text', text: operation.text }] : [],
+          });
+          tr.replaceWith(match.pos, match.pos + match.node.nodeSize, replacement);
+        }
+        if (!tr.docChanged) return false;
+        editor.view.dispatch(tr);
+        return true;
+      },
+      insertBelow: (proposal) => {
+        if (!proposal.suggested.length) return false;
+        const sourceMap = new Map<string, { pos: number; node: any }>();
+        editor.state.doc.descendants((node, pos) => {
+          if (node.type.name === 'paragraph' && typeof node.attrs.blockId === 'string') {
+            sourceMap.set(node.attrs.blockId, { pos, node });
+          }
+        });
+        const matches = proposal.sourceBlockIds
+          .map((id) => sourceMap.get(id))
+          .filter((entry): entry is { pos: number; node: any } => !!entry);
+        if (!matches.length) return false;
+        const insertionPos = matches.reduce((max, entry) => Math.max(max, entry.pos + entry.node.nodeSize), 0);
+        const tr = editor.state.tr;
+        const nodes = proposal.suggested.map((block) => editor.schema.nodeFromJSON({
+          type: 'paragraph',
+          attrs: { kind: block.type, blockId: block.id },
+          content: block.content ? [{ type: 'text', text: block.content }] : [],
+        }));
+        tr.insert(insertionPos, nodes);
+        if (!tr.docChanged) return false;
+        editor.view.dispatch(tr);
+        return true;
+      },
+    });
+  }, [editor, onRegisterProposalActions]);
 
   function format(type: ElementType) {
     if (!editor) return;
@@ -352,6 +482,9 @@ export default function ScriptEditor({
         locations={locations}
         isTypingFocus={isTypingFocus}
         onTypingFocusChange={onTypingFocusChange}
+        hasScreenplaySelection={!!selection}
+        onAskCoDrafter={onAskCoDrafter}
+                onCoDrafterAction={onCoDrafterAction}
       />
     );
   }
@@ -493,6 +626,18 @@ export default function ScriptEditor({
         <span>Scene-linked writing</span>
         <span>Enter continues your screenplay · Tab cycles element</span>
       </div>
+      {selection && selection.selectedText.length > 0 && selectionPosition && onAskCoDrafter && typeof document !== 'undefined' && createPortal(
+        <button
+          type="button"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={onAskCoDrafter}
+          className="fixed z-[300] inline-flex items-center text-black gap-1.5 rounded-md border border-primary/30 bg-background px-2.5 py-1.5 text-xs font-medium shadow-md hover:bg-primary/100 hover:text-black focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:pointer-events-none disabled:opacity-50"
+          style={{ left: selectionPosition.left, top: selectionPosition.top }}
+        >
+          <Sparkles size={13} /> Ask Co-Drafter
+        </button>,
+        document.body,
+      )}
     </div>
   );
 }

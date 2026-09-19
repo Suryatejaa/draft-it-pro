@@ -41,6 +41,9 @@ interface MobileScriptEditorProps {
   locations?: string[];
   isTypingFocus?: boolean;
   onTypingFocusChange?: (isTyping: boolean) => void;
+  hasScreenplaySelection?: boolean;
+  onAskCoDrafter?: () => void;
+  onCoDrafterAction?: (action: 'tighten' | 'alternatives' | 'custom') => void;
 }
 
 export function MobileScriptEditor({
@@ -56,6 +59,9 @@ export function MobileScriptEditor({
   locations = [],
   isTypingFocus: propIsTypingFocus,
   onTypingFocusChange,
+  hasScreenplaySelection = false,
+  onAskCoDrafter,
+  onCoDrafterAction,
 }: MobileScriptEditorProps) {
   const [sceneSelectorOpen, setSceneSelectorOpen] = useState(false);
   const [elementMenuOpen, setElementMenuOpen] = useState(false);
@@ -63,6 +69,7 @@ export function MobileScriptEditor({
   const [sceneSearch, setSceneSearch] = useState('');
   const [previewZoom, setPreviewZoom] = useState(0.42); // Fits 8.5in paper into typical 390px mobile screen
   const [internalTypingFocus, setInternalTypingFocus] = useState(false);
+  const [compactChrome, setCompactChrome] = useState(false);
 
   const isTypingFocus =
     propIsTypingFocus !== undefined ? propIsTypingFocus : internalTypingFocus;
@@ -128,6 +135,17 @@ export function MobileScriptEditor({
       editor.off('blur', handleBlur);
     };
   }, [editor]);
+
+  useEffect(() => {
+    let previousY = window.scrollY;
+    const handleScroll = () => {
+      const nextY = window.scrollY;
+      setCompactChrome(nextY > previousY && nextY > 72);
+      previousY = nextY;
+    };
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
 
   // Render contextual action buttons in the mobile formatting bar
   const renderContextButtons = () => {
@@ -223,7 +241,7 @@ export function MobileScriptEditor({
   };
 
   return (
-    <div className={`mobile-focus-editor-wrap ${isTypingFocus ? 'typing-focus' : ''}`}>
+    <div className={`mobile-focus-editor-wrap ${isTypingFocus ? 'typing-focus' : ''} ${compactChrome ? 'chrome-collapsed' : ''}`}>
       {/* Top Scene Selector Bar */}
       <div className="mobile-scene-header">
         <button
@@ -233,11 +251,11 @@ export function MobileScriptEditor({
         >
           <div className="flex flex-col items-start min-w-0">
             <span className="scene-count-badge flex items-center gap-1">
-              Scene {pad(currentIndex + 1)} of {pad(totalScenes)}
+              {pad(currentIndex + 1)} / {pad(totalScenes)} ·
               <ChevronDown size={12} className="opacity-70" />
             </span>
             <span className="scene-heading-title truncate">
-              {scene.heading || 'UNTITLED SCENE'}
+              {(scene.heading || 'UNTITLED SCENE').replace(/^(INT\.|EXT\.|INT\/EXT\.)\s*/i, '')}
             </span>
           </div>
         </button>
@@ -287,7 +305,7 @@ export function MobileScriptEditor({
             onClick={() => prevScene && onSelectScene(prevScene.id)}
           >
             <ChevronLeft size={16} />
-            <span>Prev Scene</span>
+            <span>{prevScene ? pad(currentIndex) : '‹'}</span>
           </button>
 
           {onOpenSceneDetails && (
@@ -296,7 +314,7 @@ export function MobileScriptEditor({
               className="mobile-scene-details-link"
               onClick={onOpenSceneDetails}
             >
-              Scene Details
+              {pad(currentIndex + 1)} / {pad(totalScenes)}
             </button>
           )}
 
@@ -306,7 +324,7 @@ export function MobileScriptEditor({
             disabled={!nextScene}
             onClick={() => nextScene && onSelectScene(nextScene.id)}
           >
-            <span>Next Scene</span>
+            <span>{nextScene ? pad(currentIndex + 2) : '›'}</span>
             <ChevronRight size={16} />
           </button>
         </div>
@@ -318,6 +336,10 @@ export function MobileScriptEditor({
           type="button"
           className="mobile-write-fab"
           onClick={() => {
+            if (hasScreenplaySelection) {
+              setElementMenuOpen(true);
+              return;
+            }
             editor?.commands.focus();
             setTypingFocus(true);
           }}
@@ -378,6 +400,22 @@ export function MobileScriptEditor({
               );
             })}
           </div>
+
+          {hasScreenplaySelection && onAskCoDrafter && (
+            <section className="mobile-codraft-actions" aria-label="Co-Drafter actions">
+              <div className="mobile-sheet-section-label">Co-Drafter</div>
+              <button type="button" className="mobile-element-choice" onClick={() => { setElementMenuOpen(false); onAskCoDrafter(); }}>
+                <span className="choice-label">Open Co-Drafter</span><Sparkles size={15} className="text-primary" />
+              </button>
+              {onCoDrafterAction && (
+                <div className="mobile-codraft-action-grid">
+                  <button type="button" onClick={() => { setElementMenuOpen(false); onCoDrafterAction('tighten'); }}>Tighten</button>
+                  <button type="button" onClick={() => { setElementMenuOpen(false); onCoDrafterAction('alternatives'); }}>Alternatives</button>
+                  <button type="button" onClick={() => { setElementMenuOpen(false); onCoDrafterAction('custom'); }}>Rewrite</button>
+                </div>
+              )}
+            </section>
+          )}
 
           <div className="flex items-center justify-between pt-2 border-t border-border/50 text-xs text-muted-foreground">
             <span>Tip: Enter continues script · Tab cycles</span>

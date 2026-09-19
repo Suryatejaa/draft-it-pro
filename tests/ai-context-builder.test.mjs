@@ -171,6 +171,23 @@ describe('buildAgentContext — Selection context', () => {
     });
     strictAssert.ok(ctx.formattedContext.includes('What is this?'));
   });
+
+  test('includes proposal selection IDs, types, and source revision in provider context', () => {
+    const ctx = buildAgentContext({
+      rootProject: PROJECT,
+      activeView: 'Screenplay',
+      currentSceneId: 'scene-1',
+      selectedBlockIds: ['b2', 'b3'],
+      selectedText: 'ARJUN\nWhat is this?',
+      selectionBlockTypes: ['character', 'dialogue'],
+      sourceRevision: 'scene-revision-123',
+    });
+
+    strictAssert.ok(ctx.formattedContext.includes('Block IDs: b2, b3'));
+    strictAssert.ok(ctx.formattedContext.includes('Block types: character, dialogue'));
+    strictAssert.ok(ctx.formattedContext.includes('Source revision: scene-revision-123'));
+    strictAssert.ok(ctx.formattedContext.includes('[CHARACTER] ARJUN\n[DIALOGUE] What is this?'));
+  });
 });
 
 describe('buildAgentContext — Privacy filtering', () => {

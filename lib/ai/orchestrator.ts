@@ -5,17 +5,30 @@ import { ModelRouter } from './router.ts';
 import { buildAgentContext, type BuildContextOptions } from './context-builder.ts';
 import { CO_WRITER_SYSTEM_INSTRUCTION } from './system-instructions.ts';
 import { READ_ONLY_TOOLS, initialReadOnlyQueries, retrieveToolResult } from './tools.ts';
+import { isCoDrafterEditableBlock } from './screenplay-proposal.ts';
+import { normalizeSarvamChatResponse } from './providers/chat-transport.ts';
 
 export interface OrchestrateOptions extends BuildContextOptions {
   history?: LLMMessage[];
   userQuery: string;
   settings?: ProviderSettings;
   selectedModel?: string;
+  maxTokens?: number;
   abortSignal?: AbortSignal;
   onRequestStart?: () => void;
+  onHostedRequestSettled?: () => void | Promise<void>;
+  diagnostics?: OrchestrateDiagnostics;
+}
+
+export interface OrchestrateDiagnostics {
+  requestId: string;
+  intent?: string;
+  sourceBlocks?: Array<{ id: string; type: string; text: string }>;
+  retryAttempt?: number;
 }
 
 export const MAX_TOOL_ROUNDS = 4;
+const ALTERNATIVES_ISOLATED_SYSTEM_INSTRUCTION = 'Return only the requested Alternatives JSON. Do not analyze, explain, deliberate, or output prose outside the JSON.';
 
 /** Development diagnostics contain IDs/counts and routing metadata only, never credentials or raw content. */
 function debug(event: string, metadata: unknown) {
@@ -24,21 +37,80 @@ function debug(event: string, metadata: unknown) {
 
 export class AgentOrchestrator {
   private router: ModelRouter;
-  constructor(settings?: ProviderSettings) { this.router = new ModelRouter(settings || loadAISettings()); }
+  private hostedAuthToken?: string;
+  constructor(settings?: ProviderSettings, hostedAuthToken?: string) {
+    this.router = new ModelRouter(settings || loadAISettings());
+    this.hostedAuthToken = hostedAuthToken;
+  }
 
   async run(options: OrchestrateOptions): Promise<LLMResponse> { return this.respond(options); }
   async stream(options: OrchestrateOptions, onChunk: (chunk: LLMStreamChunk) => void): Promise<LLMResponse> {
     return this.respond(options, onChunk);
   }
 
+  private async executeHosted(
+    request: Parameters<ModelRouter['execute']>[0],
+    selectedModel: string | undefined,
+    onChunk?: (chunk: LLMStreamChunk) => void,
+    onHostedRequestSettled?: () => void | Promise<void>,
+  ): Promise<LLMResponse> {
+    const response = await fetch('/api/ai/hosted-chat', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.hostedAuthToken}`,
+      },
+      body: JSON.stringify({
+        requestId: request.diagnostics?.requestId,
+        model: selectedModel,
+        messages: request.messages,
+        systemInstruction: request.systemInstruction,
+        tools: request.tools,
+        maxTokens: request.maxTokens,
+        temperature: request.temperature,
+        reasoningEffort: request.reasoningEffort,
+        intent: request.diagnostics?.intent,
+      }),
+      signal: request.abortSignal,
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (response.headers.get('X-Hosted-Credit-Reconciled') === 'true') {
+      await onHostedRequestSettled?.();
+    }
+    if (!response.ok) {
+      const error = new Error(data.error || 'Hosted AI execution failed.');
+      (error as Error & { status?: number }).status = response.status;
+      throw error;
+    }
+
+    const normalized = normalizeSarvamChatResponse(data);
+    if (normalized.content) onChunk?.({ type: 'content', content: normalized.content });
+
+    return {
+      ...normalized,
+      providerId: 'sarvam',
+      model: 'sarvam-105b',
+    };
+  }
+
   private async respond(options: OrchestrateOptions, onChunk?: (chunk: LLMStreamChunk) => void): Promise<LLMResponse> {
-    const { rootProject, activeWorkspace, history = [], userQuery, selectedModel, abortSignal } = options;
+    const { rootProject, activeWorkspace, history = [], userQuery, selectedModel, maxTokens, abortSignal } = options;
+    const isolatedAlternatives = options.diagnostics?.intent === 'alternatives';
+    if (options.diagnostics?.intent && options.diagnostics.sourceBlocks?.length !== 1) {
+      throw new Error('Co-Drafter requires exactly one editable screenplay source block.');
+    }
+    if (options.diagnostics?.sourceBlocks?.some((block) => !isCoDrafterEditableBlock({ type: block.type as any }))) {
+      throw new Error('Co-Drafter received a non-editable screenplay source block.');
+    }
     const checkCancelled = () => { if (abortSignal?.aborted) throw Object.assign(new Error('Request cancelled'), { name: 'AbortError', failureType: 'cancelled' }); };
     checkCancelled();
-    const context = buildAgentContext(options);
-    debug('context', context.retrieval);
-    const systemInstruction = `${CO_WRITER_SYSTEM_INSTRUCTION}\n\n${context.systemPromptAddendum}\n\n${context.formattedContext}`;
-    const messages: LLMMessage[] = [...history, { role: 'user', content: userQuery }];
+    const context = isolatedAlternatives ? null : buildAgentContext(options);
+    if (context) debug('context', context.retrieval);
+    const systemInstruction = isolatedAlternatives
+      ? ALTERNATIVES_ISOLATED_SYSTEM_INSTRUCTION
+      : `${CO_WRITER_SYSTEM_INSTRUCTION}\n\n${context?.systemPromptAddendum}\n\n${context?.formattedContext}`;
+    const messages: LLMMessage[] = isolatedAlternatives ? [{ role: 'user', content: userQuery }] : [...history, { role: 'user', content: userQuery }];
     let initialCharacterLinkCount: number | undefined;
     const read = (name: string, args: Record<string, unknown>) => {
       checkCancelled();
@@ -63,7 +135,7 @@ export class AgentOrchestrator {
       return serialized;
     };
     // Explicit global questions retrieve scoped summaries even if the model would otherwise answer from local context.
-    const initialCalls = initialReadOnlyQueries(userQuery, rootProject, activeWorkspace).map((call, i) => ({ ...call, id: `retrieval-${i}` }));
+    const initialCalls = isolatedAlternatives ? [] : initialReadOnlyQueries(userQuery, rootProject, activeWorkspace).map((call, i) => ({ ...call, id: `retrieval-${i}` }));
     if (initialCalls.length) {
       messages.push({ role: 'assistant', content: '', toolCalls: initialCalls });
       for (const call of initialCalls) messages.push({ role: 'tool', toolCallId: call.id, content: read(call.name, call.arguments) });
@@ -73,10 +145,14 @@ export class AgentOrchestrator {
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
       checkCancelled();
       if (process.env.NODE_ENV === 'development') for (const message of messages) if (message.role === 'tool') traceSerializedToolScenes('orchestrator.toolResultSentToProvider', message.content);
-      const request = { systemInstruction, messages, tools: READ_ONLY_TOOLS, abortSignal };
+      const request = { systemInstruction, messages, tools: isolatedAlternatives ? undefined : READ_ONLY_TOOLS, maxTokens, abortSignal, diagnostics: options.diagnostics };
       let response: LLMResponse;
       try {
-        response = onChunk ? await this.router.stream(request, onChunk, selectedModel) : await this.router.execute(request, selectedModel);
+        response = this.hostedAuthToken
+          ? await this.executeHosted(request, selectedModel, onChunk, options.onHostedRequestSettled)
+          : onChunk
+            ? await this.router.stream(request, onChunk, selectedModel)
+            : await this.router.execute(request, selectedModel);
       } catch (error) {
         const failure = error as { failureType?: string; attempted?: Array<{ providerId: string; model: string; failureType: string }> };
         debug('request_failed', { failure: failure.failureType, fallbackPath: failure.attempted?.map(a => ({ provider: a.providerId, model: a.model, failure: a.failureType })) });

@@ -136,10 +136,10 @@ body {
 }
 :root {
   --background: #f6f7f9;
-  --foreground: #222831;
+  --foreground: #1f2937;
   --card: #fff;
-  --card-foreground: #222831;
-  --primary: #c3ed75;
+  --card-foreground: #1f2937;
+  --primary: #8fd114;
   --primary-foreground: #20271b;
   --sidebar: #191e25;
   --sidebar-foreground: #aeb5be;
@@ -148,7 +148,7 @@ body {
   --sidebar-border: #31363e;
   --border: #e3e6e9;
   --popover: #fff;
-  --popover-foreground: #222831;
+  --popover-foreground: #1f2937;
   --radius: 0.5rem;
   --muted: #f0f2f4;
   --muted-foreground: #707780;
@@ -184,11 +184,11 @@ button:focus-visible {
   padding: 24px 15px;
 }
 .brand svg {
-  color: #c3ed75;
+  color: #8fd114;
 }
 .brand b {
   font-size: 10px;
-  color: #c3ed75;
+  color: #8fd114;
   letter-spacing: 1px;
   border: 1px solid #566541;
   padding: 3px 5px;
@@ -345,7 +345,7 @@ h1 {
   align-items: center;
   justify-content: center;
   gap: 9px;
-  background: #c3ed75;
+  background: #8fd114;
   color: #26341c;
   padding: 11px 16px;
   border-radius: 6px;
@@ -732,8 +732,15 @@ button:disabled {
 }
 .project-cover h2 {
   font-family: Georgia;
-  font-size: 36px;
   letter-spacing: 3px;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+.project-cover-title-wrap {
+  min-width: 0;
+  max-height: 125px;
+  overflow: hidden;
 }
 .project-cover svg {
   opacity: 0.45;
@@ -799,6 +806,17 @@ button:disabled {
 }
 .script-nav {
   padding: 4px 10px 10px 0;
+}
+@media (min-width: 901px) {
+  .script-nav {
+    position: sticky;
+    top: var(--app-header-height);
+    align-self: flex-start;
+    max-height: calc(100dvh - var(--app-header-height));
+    overflow-y: auto;
+    background: var(--background);
+    z-index: 100;
+  }
 }
 .script-nav .section-kicker {
   display: flex;
@@ -2390,7 +2408,7 @@ button:disabled {
 .account-panel .google-login {
   width: 100%;
   padding: 11px;
-  background: #c3ed75;
+  background: #8fd114;
   color: #29371f;
   border-radius: 6px;
   font-size: 14px;
@@ -2699,7 +2717,7 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  height: 52px;
+  height: 48px;
   padding: 0 12px;
   background: rgba(255, 255, 255, 0.94);
   backdrop-filter: blur(10px);
@@ -2758,10 +2776,57 @@ button:disabled {
   color: var(--primary);
 }
 
+.mobile-header-sub .view-kicker,
+.mobile-sync-pill.idle .mobile-sync-label {
+  display: none;
+}
+
 .mobile-header-actions {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.mobile-account-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  background: var(--muted);
+  color: var(--foreground);
+  overflow: hidden;
+  touch-action: manipulation;
+}
+.mobile-account-trigger:active {
+  background: var(--border);
+}
+.mobile-account-avatar {
+  display: inline-flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  background: #3c4655;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  object-fit: cover;
+}
+.mobile-account-avatar-large {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  border-radius: 9999px;
+  font-size: 13px;
+}
+.mobile-account-sheet {
+  max-height: min(620px, 90dvh);
+  overflow-y: auto;
+  padding-bottom: 0;
 }
 
 /* Subtle Cloud Sync Status Pill */
@@ -2871,7 +2936,7 @@ button:disabled {
   color: #26351c;
 }
 .dark .mobile-nav-item.active {
-  color: #c3ed75;
+  color: #8fd114;
 }
 
 /* Icon pill — fixed 36 × 28 px, pill shape */
@@ -2932,7 +2997,7 @@ button:disabled {
   transition: border-color 0.15s, background 0.15s;
 }
 .mobile-more-card.selected {
-  border-color: #c3ed75;
+  border-color: #8fd114;
   background: rgba(195, 237, 117, 0.12);
 }
 .mobile-more-card:active {
@@ -3028,13 +3093,14 @@ button:disabled {
 /* Top Scene Selector Bar */
 .mobile-scene-header {
   position: sticky;
-  top: 52px;
+  top: 48px;
   z-index: 35;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px 14px;
+  min-height: 46px;
+  padding: 5px 12px;
   background: rgba(246, 247, 249, 0.95);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
@@ -3067,7 +3133,7 @@ button:disabled {
 
 .scene-heading-title {
   font-family: 'Courier Prime', 'Courier New', Courier, monospace;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--foreground);
   line-height: 1.2;
@@ -3092,7 +3158,7 @@ button:disabled {
 /* Mobile Focus Canvas & Typography */
 .mobile-focus-canvas {
   flex: 1;
-  padding: 16px 16px 140px;
+  padding: 10px 12px 116px;
   max-width: 680px;
   margin: 0 auto;
   width: 100%;
@@ -3202,19 +3268,29 @@ button:disabled {
 
 /* Scene Navigation Buttons at Bottom of Editor */
 .mobile-scene-bottom-nav {
+  position: sticky;
+  bottom: calc(68px + env(safe-area-inset-bottom, 0px));
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 40px;
-  padding-top: 16px;
-  border-top: 1px dashed var(--border);
+  margin: 28px -12px 0;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--background) 92%, transparent);
+  backdrop-filter: blur(8px);
+  z-index: 30;
 }
 
 .mobile-nav-scene-btn {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 8px 12px;
+  min-width: 54px;
+  justify-content: center;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
   font-size: 12px;
   font-weight: 600;
   border-radius: 8px;
@@ -3236,6 +3312,40 @@ button:disabled {
   background: transparent;
   border: none;
   cursor: pointer;
+}
+
+.mobile-focus-editor-wrap.chrome-collapsed .mobile-scene-header {
+  transform: translateY(-1px);
+  opacity: 0.9;
+}
+
+.mobile-codraft-actions {
+  margin: 8px 0 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.mobile-sheet-section-label {
+  margin-bottom: 7px;
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.mobile-codraft-action-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 8px;
+}
+.mobile-codraft-action-grid button {
+  min-height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--muted);
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 /* Compact Formatting Bar Docked Above Keyboard */
@@ -3295,12 +3405,83 @@ button:disabled {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
+
+.mobile-codraft-fab {
+  position: fixed;
+  right: 16px;
+  bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+  z-index: 51;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 44px;
+  height: 44px;
+  padding: 0 14px;
+  border: 1px solid rgba(143, 209, 20, 0.5);
+  border-radius: 22px;
+  background: #242c34;
+  color: #c3ed75;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  touch-action: manipulation;
+}
+.mobile-codraft-fab:active {
+  transform: scale(0.96);
+}
+.mobile-codraft-fab.screenplay {
+  bottom: calc(120px + env(safe-area-inset-bottom, 0px));
+  width: 44px;
+  padding: 0;
+  border-radius: 50%;
+  background: #191e25;
+  color: #c3ed75;
+}
+.mobile-codraft-fab.screenplay span {
+  display: none;
+}
+.mobile-focus-editor-wrap.chrome-collapsed .mobile-write-fab {
+  width: 40px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 50%;
+}
+.mobile-focus-editor-wrap.chrome-collapsed .mobile-write-fab span {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  .co-drafter-panel {
+    position: fixed;
+    inset: 0;
+    z-index: 120;
+    width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .co-drafter-panel .co-drafter-header {
+    min-height: 56px;
+    padding-top: calc(8px + env(safe-area-inset-top, 0px));
+  }
+
+  .co-drafter-panel .co-drafter-header select {
+    display: none;
+  }
+
+  .co-drafter-panel > .flex-1 {
+    padding-bottom: 12px;
+  }
+}
 .mobile-write-fab:active {
   transform: scale(0.96);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
 }
 .dark .mobile-write-fab {
-  background: #c3ed75;
+  background: #8fd114;
   color: #191e25;
 }
 
@@ -3321,7 +3502,7 @@ button:disabled {
   flex-shrink: 0;
 }
 .dark .mobile-format-main-btn {
-  background: #c3ed75;
+  background: #8fd114;
   color: #191e25;
 }
 
@@ -3385,7 +3566,7 @@ button:disabled {
   font-weight: 500;
 }
 .mobile-element-choice.selected {
-  border-color: #c3ed75;
+  border-color: #8fd114;
   background: rgba(195, 237, 117, 0.15);
   font-weight: 700;
 }
@@ -3428,7 +3609,7 @@ button:disabled {
   cursor: pointer;
 }
 .mobile-scene-item.selected {
-  border-color: #c3ed75;
+  border-color: #8fd114;
   background: rgba(195, 237, 117, 0.12);
 }
 .mobile-scene-item .scene-num {
@@ -3635,7 +3816,7 @@ button:disabled {
   color: #ffffff;
 }
 .dark .mobile-card-action-btn.write {
-  background: #c3ed75;
+  background: #8fd114;
   color: #191e25;
 }
 
@@ -3718,9 +3899,9 @@ button:disabled {
   border-color: #191e25;
 }
 .dark .mobile-scene-selector-pills .scene-pill.selected {
-  background: #c3ed75;
+  background: #8fd114;
   color: #191e25;
-  border-color: #c3ed75;
+  border-color: #8fd114;
 }
 
 .mobile-scene-banner {
@@ -3856,7 +4037,7 @@ button:disabled {
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  background: #c3ed75;
+  background: #8fd114;
   color: #191e25;
   display: flex;
   align-items: center;
@@ -3887,7 +4068,7 @@ button:disabled {
   background: #191e25;
 }
 .dark .carousel-dot.active {
-  background: #c3ed75;
+  background: #8fd114;
 }
 
 /* Image Upload Sheet Options */
@@ -4112,9 +4293,9 @@ button:disabled {
   border-color: #191e25;
 }
 .dark .filter-chip.active {
-  background: #c3ed75;
+  background: #8fd114;
   color: #191e25;
-  border-color: #c3ed75;
+  border-color: #8fd114;
 }
 
 .mobile-shots-container {
@@ -4140,7 +4321,7 @@ button:disabled {
   color: #ffffff;
 }
 .dark .mobile-shot-badge {
-  background: #c3ed75;
+  background: #8fd114;
   color: #191e25;
 }
 

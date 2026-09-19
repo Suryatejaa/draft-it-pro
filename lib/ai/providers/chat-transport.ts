@@ -8,8 +8,8 @@ export const wireMessages = (messages: LLMMessage[]) => messages.map(m => ({
 export const wireTools = (request: LLMRequest) => request.tools?.length
   ? { tools: request.tools.map(tool => ({ type: 'function', function: tool })) } : {};
 
-export function parseToolCalls(calls: any[] = []): ToolCall[] {
-  return calls.map(call => {
+export function parseToolCalls(calls: any[] | null = []): ToolCall[] {
+  return (calls ?? []).map(call => {
     let args: unknown;
     try { args = JSON.parse(call.function?.arguments || '{}'); } catch { throw new Error('Model returned malformed tool arguments. Please retry.'); }
     if (!call.id || !call.function?.name || !args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Model returned an invalid tool request. Please retry.');
@@ -17,12 +17,27 @@ export function parseToolCalls(calls: any[] = []): ToolCall[] {
   });
 }
 
+export function normalizeSarvamChatResponse(data: any): Pick<LLMResponse, 'content' | 'toolCalls' | 'finishReason' | 'reasoningContent' | 'usage'> {
+  const choice = data?.choices?.[0];
+  return {
+    content: typeof choice?.message?.content === 'string' ? choice.message.content : '',
+    toolCalls: parseToolCalls(choice?.message?.tool_calls),
+    finishReason: choice?.finish_reason || 'stop',
+    reasoningContent: typeof choice?.message?.reasoning_content === 'string' ? choice.message.reasoning_content : '',
+    usage: {
+      inputTokens: data?.usage?.prompt_tokens,
+      outputTokens: data?.usage?.completion_tokens,
+      totalTokens: data?.usage?.total_tokens,
+    },
+  };
+}
+
 /** Decode complete SSE events, including fragmented JSON/tool arguments and a final unterminated event. */
-export async function readChatStream(res: Response, onChunk: (chunk: LLMStreamChunk) => void): Promise<Pick<LLMResponse, 'content' | 'toolCalls' | 'finishReason' | 'usage'>> {
+export async function readChatStream(res: Response, onChunk: (chunk: LLMStreamChunk) => void): Promise<Pick<LLMResponse, 'content' | 'toolCalls' | 'finishReason' | 'usage' | 'reasoningContent'>> {
   const reader = res.body?.getReader();
   if (!reader) throw new Error('Provider returned no response stream.');
   const decoder = new TextDecoder();
-  let buffer = '', content = '', doneEvent = false;
+  let buffer = '', content = '', reasoningContent = '', doneEvent = false;
   let finishReason: LLMResponse['finishReason'];
   let usage: LLMResponse['usage'];
   const calls = new Map<number, { id: string; function: { name: string; arguments: string } }>();
@@ -34,8 +49,9 @@ export async function readChatStream(res: Response, onChunk: (chunk: LLMStreamCh
     if (parsed.error) throw new Error('Provider reported a streaming error. Please retry.');
     const choice = parsed.choices?.[0];
     if (choice?.finish_reason) finishReason = choice.finish_reason;
-    if (parsed.usage) usage = { inputTokens: parsed.usage.prompt_tokens, outputTokens: parsed.usage.completion_tokens };
+    if (parsed.usage) usage = { inputTokens: parsed.usage.prompt_tokens, outputTokens: parsed.usage.completion_tokens, totalTokens: parsed.usage.total_tokens };
     if (choice?.delta?.content) { content += choice.delta.content; onChunk({ type: 'content', content: choice.delta.content }); }
+    if (choice?.delta?.reasoning_content) reasoningContent += choice.delta.reasoning_content;
     for (const delta of choice?.delta?.tool_calls || []) {
       if (!Number.isInteger(delta.index) || delta.index < 0 || delta.index >= 16) throw new Error('Too many or invalid tool calls in one response.');
       const call = calls.get(delta.index) || { id: '', function: { name: '', arguments: '' } };
@@ -58,6 +74,6 @@ export async function readChatStream(res: Response, onChunk: (chunk: LLMStreamCh
       if (done) { if (buffer.trim() && !doneEvent) event(buffer); break; }
     }
     if (!doneEvent && !finishReason) throw new Error('Provider response ended unexpectedly. Please retry.');
-    return { content, toolCalls: parseToolCalls([...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call)), finishReason: finishReason || 'stop', usage };
+    return { content, reasoningContent, toolCalls: parseToolCalls([...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call)), finishReason: finishReason || 'stop', usage };
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }

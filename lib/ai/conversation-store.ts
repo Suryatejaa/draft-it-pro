@@ -1,4 +1,5 @@
 import type { LLMMessage, LLMUsageMetadata, FallbackMetadata } from './types';
+import type { ScreenplayAlternatives, ScreenplayProposal } from './screenplay-proposal';
 
 export interface ChatMessage extends LLMMessage {
   id: string;
@@ -7,6 +8,8 @@ export interface ChatMessage extends LLMMessage {
   usage?: LLMUsageMetadata;
   fallback?: FallbackMetadata;
   contextTag?: string;
+  proposal?: ScreenplayProposal;
+  alternatives?: ScreenplayAlternatives;
 }
 
 const CONVERSATION_KEY_PREFIX = 'draftit_cowriter_chat_v1_';

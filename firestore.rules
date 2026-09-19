@@ -17,5 +17,40 @@ service cloud.firestore {
       allow update: if owner() && valid() && request.resource.data.revision == resource.data.revision + 1;
       allow delete: if owner();
     }
+
+    // Plan configurations: readable by all clients, writes denied (server/admin only)
+    match /planConfigs/{planId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Discounts: readable by all clients, writes denied (server/admin only)
+    match /discounts/{discountId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Subscriptions: users can only read their own subscription record, writes denied to client
+    match /subscriptions/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow write: if false;
+    }
+
+    // AI Credit Periods: users can read their own period, writes denied to client
+    match /aiCreditPeriods/{periodId} {
+      allow read: if request.auth != null && (resource == null || resource.data.userId == request.auth.uid);
+      allow write: if false;
+    }
+
+    // Append-only AI usage ledger: users can read their own usage records, writes denied to client
+    match /aiUsage/{usageId} {
+      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
+      allow write: if false;
+    }
+
+    // Admin audit log: strictly forbidden to direct client access
+    match /adminAuditLog/{eventId} {
+      allow read, write: if false;
+    }
   }
 }

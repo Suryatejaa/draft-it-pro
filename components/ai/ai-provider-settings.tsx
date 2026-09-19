@@ -143,24 +143,9 @@ export function AIProviderSettings({ onClose }: AIProviderSettingsProps) {
                 Masked Key: <span className="font-mono">{maskApiKey(settings.sarvam.apiKey)}</span>
               </p>
             )}
-          </div>
-
-          <div>
-            <label className="text-xs font-medium text-muted-foreground block mb-1">Default Model</label>
-            <select
-              value={settings.sarvam.model}
-              onChange={(e) =>
-                setSettings({
-                  ...settings,
-                  sarvam: { ...settings.sarvam, model: e.target.value },
-                })
-              }
-              className="w-full bg-background border border-input rounded-md px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
-            >
-              <option value="sarvam-105b">Sarvam 105B (Primary)</option>
-              <option value="sarvam-30b">Sarvam 30B (Faster / Fallback)</option>
-              <option value="sarvam-2b">Sarvam 2B (Lightweight)</option>
-            </select>
+            <p className="text-[11px] text-muted-foreground mt-2">
+              Draft-it automatically selects the appropriate Sarvam model for each Co-Drafter task.
+            </p>
           </div>
         </div>
       </div>
@@ -263,61 +248,6 @@ export function AIProviderSettings({ onClose }: AIProviderSettingsProps) {
                 Masked Key: <span className="font-mono">{maskApiKey(settings.openaiCompatible.apiKey)}</span>
               </p>
             )}
-          </div>
-        </div>
-      </div>
-
-      {/* Model Router Configuration */}
-      <div className="border border-border/60 rounded-xl p-4 space-y-3.5 bg-card/50">
-        <h3 className="font-medium text-foreground">Model Router & Fallback Order</h3>
-        <p className="text-xs text-muted-foreground">
-          When using <span className="font-semibold text-foreground">Auto</span> mode, Co-Drafter will route queries starting with your primary model and automatically fall back if temporary timeouts or capacity limits occur.
-        </p>
-
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="text-xs font-medium text-muted-foreground block mb-1">Primary Model</label>
-            <select
-              value={`${settings.routing.primaryProviderId}:${settings.routing.primaryModel}`}
-              onChange={(e) => {
-                const [pId, mId] = e.target.value.split(':');
-                setSettings({
-                  ...settings,
-                  routing: {
-                    ...settings.routing,
-                    primaryProviderId: pId as LLMProviderId,
-                    primaryModel: mId,
-                  },
-                });
-              }}
-              className="w-full bg-background border border-input rounded-md px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
-            >
-              <option value="sarvam:sarvam-105b">Sarvam 105B</option>
-              <option value="sarvam:sarvam-30b">Sarvam 30B</option>
-              <option value="openai-compatible:gpt-4o-mini">OpenAI-Compatible Endpoint</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="text-xs font-medium text-muted-foreground block mb-1">Fallback Model</label>
-            <select
-              value={`${settings.routing.fallbacks[0]?.providerId || 'sarvam'}:${settings.routing.fallbacks[0]?.model || 'sarvam-30b'}`}
-              onChange={(e) => {
-                const [pId, mId] = e.target.value.split(':');
-                setSettings({
-                  ...settings,
-                  routing: {
-                    ...settings.routing,
-                    fallbacks: [{ providerId: pId as LLMProviderId, model: mId }],
-                  },
-                });
-              }}
-              className="w-full bg-background border border-input rounded-md px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
-            >
-              <option value="sarvam:sarvam-30b">Sarvam 30B</option>
-              <option value="sarvam:sarvam-105b">Sarvam 105B</option>
-              <option value="openai-compatible:gpt-4o-mini">OpenAI-Compatible Endpoint</option>
-            </select>
           </div>
         </div>
       </div>

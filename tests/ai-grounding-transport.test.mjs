@@ -106,6 +106,12 @@ for (const Provider of [SarvamProvider,OpenAICompatibleProvider]) {
     assert.equal(bodies[0].tools[0].function.name,'getScene');assert.equal(bodies[0].messages[1].tool_call_id,'prev');
     assert.equal(response.toolCalls[0].arguments.sceneId,'s1');
   });
+  test(`${Provider.name} accepts nonstreamed assistant responses with null tool_calls`,async t=>{
+    inspectFetch(t,()=>Response.json({choices:[{message:{content:'{"blocks":[{"type":"dialogue","text":"A better line."}]}',tool_calls:null},finish_reason:'stop'}]}));
+    const response=await new Provider('test').generate({messages:[{role:'user',content:'Improve dialogue'}]},'test-model');
+    assert.match(response.content,/blocks/);
+    assert.deepEqual(response.toolCalls,[]);
+  });
   test(`${Provider.name} assembles tool deltas across network fragments and keeps usage`,async t=>{
     const events=[{choices:[{delta:{tool_calls:[{index:0,id:'c1',function:{name:'getScene',arguments:'{"scene'}}]}}]},{choices:[{delta:{tool_calls:[{index:0,function:{arguments:'Id":"s4"}'}}]},finish_reason:'tool_calls'}],usage:{prompt_tokens:10,completion_tokens:5}}];
     const data=events.map(e=>'data: '+JSON.stringify(e)+'\r\n\r\n').join('')+'data: [DONE]';
@@ -134,10 +140,14 @@ test('development diagnostics expose scoped IDs/tools/routing but never API keys
   t.after(()=>{if(original===undefined)delete process.env.NODE_ENV;else process.env.NODE_ENV=original;});
   const logs=[];t.mock.method(console,'debug',(...args)=>logs.push(args));
   inspectFetch(t,(_p,n)=>n===1?new Response('PRIVATE_PROVIDER_ERROR',{status:503}):streamResponse({content:'Done'}));
-  const fallbackSettings={...settings,routing:{...settings.routing,fallbacks:[{providerId:'sarvam',model:'sarvam-30b'}]}};
+  const fallbackSettings={
+    ...settings,
+    openaiCompatible:{apiKey:'test-key',baseUrl:'https://example.test/v1',model:'gpt-4o-mini',name:'Test OpenAI'},
+    routing:{...settings.routing,fallbacks:[{providerId:'openai-compatible',model:'gpt-4o-mini'}]},
+  };
   await new AgentOrchestrator(fallbackSettings).stream({...options,userQuery:'List every scene'},()=>{});
   const text=JSON.stringify(logs);
-  for(const expected of ['ep','s0','s1','getScenes','entityIds','sarvam-30b','capacity'])assert.ok(text.includes(expected), expected + ": " + text);
+  for(const expected of ['ep','s0','s1','getScenes','entityIds','gpt-4o-mini','capacity'])assert.ok(text.includes(expected), expected + ": " + text);
   assert.ok(!text.includes('test-only'));assert.ok(!text.includes('PRIVATE_PROVIDER_ERROR'));
 });
 test('production requests do not emit debugging information',async t=>{

@@ -115,5 +115,5 @@ test('six canonical scenes with only two character links still serialize six com
   const result=payload.messages.filter(m=>m.role==='tool').map(m=>JSON.parse(m.content)).find(r=>r.detail==='scene_summaries_only');
   assert.deepEqual(result.data.map(scene=>scene.id),sceneIds);
   assert.equal(result.returnedCount,6);assert.equal(result.episodeCoverage.returnedSceneCount,6);assert.equal(result.complete,true);
-  for(const scene of result.data.slice(2)){assert.equal(scene.summarySource,'screenplay_excerpt');assert.ok(scene.summary.includes('Sirisha action'));assert.ok(scene.summary.length<=600);assert.equal(scene.blocks,undefined);}
+  for(const scene of result.data.slice(2)){assert.equal(scene.summarySource,'screenplay_excerpt');assert.ok(scene.screenplayExcerpt.includes('Sirisha action'));assert.ok(scene.screenplayExcerpt.length<=600);assert.equal(scene.summary,undefined);assert.equal(scene.blocks,undefined);}
 });

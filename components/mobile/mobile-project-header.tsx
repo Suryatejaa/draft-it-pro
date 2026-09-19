@@ -30,6 +30,8 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { episodeLabel, type Project } from '@/lib/project';
+import { MobileAccountSheet } from '@/components/mobile/mobile-account-sheet';
+import type { UserEntitlements } from '@/lib/entitlements/types';
 
 interface MobileProjectHeaderProps {
   project: Project;
@@ -39,6 +41,11 @@ interface MobileProjectHeaderProps {
   saved: string;
   cloudStatus: string;
   user: any;
+  entitlements: UserEntitlements;
+  authBusy: boolean;
+  configured: boolean;
+  onSignIn: () => void;
+  onSignOut: () => void;
   onBackToProjects: () => void;
   onSelectView: (view: string) => void;
   onOpenEpisodeDialog?: () => void;
@@ -54,6 +61,11 @@ export function MobileProjectHeader({
   saved,
   cloudStatus,
   user,
+  entitlements,
+  authBusy,
+  configured,
+  onSignIn,
+  onSignOut,
   onBackToProjects,
   onSelectView,
   onOpenEpisodeDialog,
@@ -64,11 +76,11 @@ export function MobileProjectHeader({
 
   // Compute clean status label
   const isSaving = saved.toLowerCase().includes('saving');
-  const isSynced = cloudStatus.toLowerCase().includes('synced') || saved.toLowerCase().includes('saved');
+  const isSynced =
+    cloudStatus.toLowerCase().includes('synced') ||
+    saved.toLowerCase().includes('saved');
 
-  const subtitle = isSeries
-    ? `${episodeLabel(project)} · ${project.title}`
-    : `${project.format || 'Project'} · ${project.draft || 'Draft 1'}`;
+  const draftLabel = project.draft || 'Draft 1';
 
   return (
     <>
@@ -80,7 +92,6 @@ export function MobileProjectHeader({
           aria-label="Back to projects"
         >
           <ChevronLeft size={20} />
-          <span className="text-xs font-medium">Projects</span>
         </button>
 
         <div className="mobile-header-center">
@@ -88,9 +99,7 @@ export function MobileProjectHeader({
             {isSeries ? rootProject.title : project.title}
           </h1>
           <div className="mobile-header-sub truncate">
-            <span>{subtitle}</span>
-            <span className="bullet">·</span>
-            <span className="view-kicker">{currentView}</span>
+            <span>{isSeries ? episodeLabel(project) : draftLabel}</span>
           </div>
         </div>
 
@@ -136,7 +145,9 @@ export function MobileProjectHeader({
             />
             <DropdownMenuContent align="end" className="w-48">
               {isSeries && (
-                <DropdownMenuItem onClick={() => onSelectView('Series overview')}>
+                <DropdownMenuItem
+                  onClick={() => onSelectView('Series overview')}
+                >
                   <Tv className="mr-2 h-4 w-4" />
                   Series Overview
                 </DropdownMenuItem>
@@ -173,6 +184,14 @@ export function MobileProjectHeader({
               )}
             </DropdownMenuContent>
           </DropdownMenu>
+          <MobileAccountSheet
+            user={user}
+            entitlements={entitlements}
+            authBusy={authBusy}
+            configured={configured}
+            onSignIn={onSignIn}
+            onSignOut={onSignOut}
+          />
         </div>
       </header>
 
@@ -184,13 +203,16 @@ export function MobileProjectHeader({
               <Cloud size={18} /> Storage & Cloud Sync
             </DialogTitle>
             <DialogDescription className="text-xs">
-              Draft-it persists locally first and syncs with Firebase in the background.
+              Draft-it persists locally first and syncs with Firebase in the
+              background.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-3 py-2 text-sm">
             <div className="flex justify-between items-center pb-2 border-b border-border/50">
-              <span className="text-muted-foreground text-xs">Local Storage</span>
+              <span className="text-muted-foreground text-xs">
+                Local Storage
+              </span>
               <span className="font-medium text-xs flex items-center gap-1">
                 <Check size={12} className="text-green-600" />
                 {saved}
@@ -198,7 +220,9 @@ export function MobileProjectHeader({
             </div>
 
             <div className="flex justify-between items-center pb-2 border-b border-border/50">
-              <span className="text-muted-foreground text-xs">Firebase Cloud</span>
+              <span className="text-muted-foreground text-xs">
+                Firebase Cloud
+              </span>
               <span className="font-medium text-xs">
                 {user ? cloudStatus : 'Guest mode (local only)'}
               </span>

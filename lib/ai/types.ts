@@ -56,13 +56,22 @@ export interface LLMRequest {
   systemInstruction?: string;
   temperature?: number;
   maxTokens?: number;
+  reasoningEffort?: 'low' | 'medium' | 'high' | null;
   tools?: ToolDefinition[];
   abortSignal?: AbortSignal;
+  diagnostics?: {
+    requestId: string;
+    intent?: string;
+    sourceBlocks?: Array<{ id: string; type: string; text: string }>;
+    retryAttempt?: number;
+    uiConversationMessageCount?: number;
+  };
 }
 
 export interface LLMUsageMetadata {
   inputTokens?: number;
   outputTokens?: number;
+  totalTokens?: number;
   durationMs?: number;
 }
 
@@ -88,6 +97,7 @@ export interface LLMResponse {
   finishReason?: 'stop' | 'tool_calls' | 'length' | 'content_filter' | 'error' | 'cancelled';
   usage?: LLMUsageMetadata;
   fallback?: FallbackMetadata;
+  reasoningContent?: string;
 }
 
 export interface LLMStreamChunk {
